@@ -5,44 +5,203 @@ on:
     branches: [main, master]
   workflow_dispatch:
 
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: bash
+
 jobs:
   build:
     runs-on: macos-14
+    timeout-minutes: 30
     env:
-      THEOS: ${{ github.workspace }}/theos
+      THEOS: ${{ runner.temp }}/weidian-grab-theos
+      THEOS_PACKAGE_SCHEME: roothide
+      FINALPACKAGE: '1'
+      HOMEBREW_NO_AUTO_UPDATE: '1'
+      PACKAGE_VERSION: '0.5.0'
+      PACKAGE_DEB: packages/com.koudai.weidian.grab_0.5.0_iphoneos-arm64e.deb
+      # Same RootHide Theos revision as the working OKOK build.
+      # Provenance: https://github.com/roothide/theos/commit/88506b2c22e9e07dd4ed055f23c9e398a117a2c7
+      THEOS_COMMIT: 88506b2c22e9e07dd4ed055f23c9e398a117a2c7
+      THEOS_TREE: 1828317baefa9a1b29a63191d7e7622f8274cf09
+      SDK_NAME: iPhoneOS16.5.sdk
+      # Official release asset; SHA256 measured from its 17,446,920 bytes.
+      # Upstream release API has no published digest; this is a measured pin.
+      SDK_URL: https://github.com/theos/sdks/releases/download/master-146e41f/iPhoneOS16.5.sdk.tar.xz
+      SDK_SHA256: 5e0fd3f01266cce4ce012d4a99b38eb56578fca40d09edc81cd83dee958202fb
+      # The archive directory says 16.5; its actual SDKSettings version is 16.4.
+      SDK_ACTUAL_VERSION: '16.4'
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout source
+        uses: actions/checkout@v4
 
-      - name: Install Theos
-        run: |
-          git clone --recursive --depth 1 https://github.com/roothide/theos.git "$THEOS"
-          mkdir -p "$THEOS/sdks"
-          SDK="$(xcrun --sdk iphoneos --show-sdk-path)"
-          echo "iPhoneOS SDK: $SDK"
-          ln -sfn "$SDK" "$THEOS/sdks/iPhoneOS.sdk"
+      - name: Select manifest validator Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
 
-      - name: Install signing/packaging tools
+      - name: Install packaging tools
         run: |
-          brew install ldid dpkg
+          set -euo pipefail
+          for formula in dpkg ldid make libplist; do
+            brew list --versions "$formula" >/dev/null 2>&1 || brew install "$formula"
+          done
+          echo "$(brew --prefix make)/libexec/gnubin" >> "$GITHUB_PATH"
           echo "$THEOS/bin" >> "$GITHUB_PATH"
 
-      - name: Build package
+      - name: Prepare pinned RootHide Theos and submodules
         run: |
-          set -o pipefail
-          make package FINALPACKAGE=1 THEOS="$THEOS" 2>&1 | tee /tmp/build.log | tail -60
-          echo "--- deb output ---"
-          ls -la packages/
+          set -euo pipefail
+          git init "$THEOS"
+          git -C "$THEOS" remote add origin https://github.com/roothide/theos.git
+          git -C "$THEOS" fetch --depth 1 origin "$THEOS_COMMIT"
+          git -C "$THEOS" checkout --detach FETCH_HEAD
+          test "$(git -C "$THEOS" rev-parse HEAD)" = "$THEOS_COMMIT"
+          test "$(git -C "$THEOS" rev-parse 'HEAD^{tree}')" = "$THEOS_TREE"
+          git -C "$THEOS" submodule sync --recursive
+          git -C "$THEOS" submodule update --init --recursive
+          git -C "$THEOS" submodule status --recursive
 
-      - name: Inspect package
+      - name: Download and verify pinned iPhoneOS SDK
         run: |
-          set -e
-          DEB="$(ls packages/*.deb | head -1)"
-          echo "deb: $DEB"
-          dpkg-deb -I "$DEB"
-          dpkg-deb -c "$DEB"
-          mkdir -p out && cp "$DEB" out/
-      - uses: actions/upload-artifact@v4
+          set -euo pipefail
+          archive="$RUNNER_TEMP/iPhoneOS16.5.sdk.tar.xz"
+          curl --fail --location --retry 3 --proto '=https' --tlsv1.2 \
+            --output "$archive" "$SDK_URL"
+          printf '%s  %s\n' "$SDK_SHA256" "$archive" | shasum -a 256 --check
+          mkdir -p "$THEOS/sdks"
+          tar -xJf "$archive" -C "$THEOS/sdks"
+          test -f "$THEOS/sdks/$SDK_NAME/SDKSettings.json"
+
+      - name: Record exact source and toolchain evidence
+        run: |
+          set -euo pipefail
+          xcodebuild -version
+          xcrun clang --version
+          python3 - <<'PY'
+          import hashlib
+          import json
+          import os
+          import pathlib
+          import plistlib
+          import subprocess
+          import sys
+
+          def command(*args):
+              return subprocess.check_output(args, text=True).strip()
+
+          def digest(path):
+              return hashlib.sha256(path.read_bytes()).hexdigest()
+
+          source_commit = command('git', 'rev-parse', 'HEAD')
+          build_header = pathlib.Path('WDGBuild.h')
+          build_header.write_text(
+              f'#define WDG_BUILD_ID "{source_commit[:12]}"\n', encoding='ascii', newline='\n')
+          theos = pathlib.Path(os.environ['THEOS'])
+          sdk = theos / 'sdks' / os.environ['SDK_NAME']
+          settings_path = sdk / 'SDKSettings.json'
+          settings = json.loads(settings_path.read_text())
+          plist_path = sdk / 'SDKSettings.plist'
+          plist = plistlib.loads(plist_path.read_bytes())
+          actual_sdk = settings['Version']
+          if actual_sdk != os.environ['SDK_ACTUAL_VERSION'] or plist['Version'] != actual_sdk:
+              raise SystemExit('SDK metadata differs from the measured official archive')
+          fields = {}
+          for line in pathlib.Path('control').read_text(encoding='utf-8').splitlines():
+              if line and not line[0].isspace() and ':' in line:
+                  key, value = line.split(':', 1)
+                  if key in fields:
+                      raise SystemExit('duplicate source control field: ' + key)
+                  fields[key] = value.strip()
+          for key, expected in {'Package': 'com.koudai.weidian.grab', 'Name': 'WeidianGrab',
+                                'Version': os.environ['PACKAGE_VERSION']}.items():
+              if fields.get(key) != expected:
+                  raise SystemExit('source control mismatch: ' + key)
+          expected_deb = f"packages/{fields['Package']}_{fields['Version']}_iphoneos-arm64e.deb"
+          if expected_deb != os.environ['PACKAGE_DEB']:
+              raise SystemExit('package path must match exact source control version')
+          # Preserve the status prefix: only a clean, initialized gitlink is accepted.
+          raw_submodules = subprocess.check_output(
+              ['git', '-C', str(theos), 'submodule', 'status', '--recursive'], text=True)
+          if any(line and line[0] != ' ' for line in raw_submodules.splitlines()):
+              raise SystemExit('Theos submodule checkout differs from pinned gitlinks')
+          archive = pathlib.Path(os.environ['RUNNER_TEMP']) / 'iPhoneOS16.5.sdk.tar.xz'
+          if digest(archive) != os.environ['SDK_SHA256']:
+              raise SystemExit('SDK archive hash mismatch')
+          evidence = {
+              'source': {'commit': source_commit,
+                         'github_sha': os.environ.get('GITHUB_SHA'),
+                         'build_id': source_commit[:12],
+                         'build_header_path': str(build_header),
+                         'build_header_sha256': digest(build_header),
+                         'control_sha256': digest(pathlib.Path('control')),
+                         'package_version': fields['Version']},
+              'theos': {'source_url': 'https://github.com/roothide/theos',
+                        'commit': command('git', '-C', str(theos), 'rev-parse', 'HEAD'),
+                        'tree': command('git', '-C', str(theos), 'rev-parse', 'HEAD^{tree}'),
+                        'submodules': raw_submodules.splitlines()},
+              'sdk': {'source_url': os.environ['SDK_URL'],
+                      'archive_sha256': digest(archive), 'archive_bytes': archive.stat().st_size,
+                      'sha256_provenance': 'measured official release asset; upstream release digest was null',
+                      'directory_label': os.environ['SDK_NAME'],
+                      'actual_version': actual_sdk, 'canonical_name': settings['CanonicalName'],
+                      'settings_json_sha256': digest(settings_path),
+                      'settings_plist_sha256': digest(plist_path)},
+              'host': {'xcode': command('xcodebuild', '-version'),
+                       'clang': command('xcrun', 'clang', '--version'),
+                       'linker': command('xcrun', 'ld', '-version_details'),
+                       'python': sys.version,
+                       'packaging': command('brew', 'list', '--versions', 'dpkg', 'ldid', 'make', 'libplist')},
+              'build': {'target': 'iphone:clang:16.5:15.0', 'sysroot': str(sdk),
+                        'scheme': 'roothide', 'architectures': ['arm64', 'arm64e'],
+                        'expected_deb': expected_deb},
+          }
+          pathlib.Path('toolchain.json').write_text(
+              json.dumps(evidence, indent=2, sort_keys=True) + '\n', encoding='utf-8')
+          print(json.dumps(evidence, indent=2, sort_keys=True))
+          PY
+
+      - name: Run production task-gate assertions on macOS
+        run: |
+          set -euo pipefail
+          test_binary="$RUNNER_TEMP/weidian-grab-task-gate-test"
+          test_log="$RUNNER_TEMP/weidian-grab-task-gate-test.log"
+          printf '%s\n' 'clang -std=c11 -Wall -Wextra -Werror -UNDEBUG Tests/task_gate_test.c' \
+            | tee "$test_log"
+          xcrun --sdk macosx clang -std=c11 -Wall -Wextra -Werror -UNDEBUG \
+            Tests/task_gate_test.c -o "$test_binary" 2>&1 | tee -a "$test_log"
+          "$test_binary" 2>&1 | tee -a "$test_log"
+
+      - name: Clean and build exact package with full log
+        run: |
+          set -euo pipefail
+          rm -rf packages
+          make clean TARGET=iphone:clang:16.5:15.0 \
+            SYSROOT="$THEOS/sdks/$SDK_NAME" 2>&1 | tee build.log
+          make package messages=yes FINALPACKAGE=1 THEOS_PACKAGE_SCHEME=roothide \
+            TARGET=iphone:clang:16.5:15.0 SYSROOT="$THEOS/sdks/$SDK_NAME" \
+            2>&1 | tee -a build.log
+          test -s "$PACKAGE_DEB"
+
+      - name: Validate exact deb and write manifest without installing
+        run: |
+          set -euo pipefail
+          python3 scripts/validate_deb.py "$PACKAGE_DEB" \
+            --version "$PACKAGE_VERSION" --expected-sdk "$SDK_ACTUAL_VERSION" \
+            --toolchain toolchain.json --output manifest.json
+
+      - name: Upload exact package and full build evidence
+        if: always()
+        uses: actions/upload-artifact@v4
         with:
-          name: weidian-grab-deb
-          path: out/*.deb
+          name: weidian-grab-roothide-0.5.0
+          path: |
+            packages/com.koudai.weidian.grab_0.5.0_iphoneos-arm64e.deb
+            manifest.json
+            toolchain.json
+            build.log
+            ${{ runner.temp }}/weidian-grab-task-gate-test.log
           if-no-files-found: error

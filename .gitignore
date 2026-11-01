@@ -4,4 +4,12 @@ obj/
 dist*/
 __pycache__/
 *.deb
+*.bin
 capture*.log
+weidian-objc.txt
+research/compile-check/
+research/runtime-metadata.json
+manifest.json
+toolchain.json
+build.log
+out/

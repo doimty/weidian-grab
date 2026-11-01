@@ -1,0 +1,14 @@
+# Keep packaging inputs and executable maintainer scripts on Unix LF.
+.gitattributes text eol=lf
+.github/workflows/*.yml text eol=lf
+scripts/*.py text eol=lf
+layout/DEBIAN/* text eol=lf
+Makefile text eol=lf
+control text eol=lf
+*.x text eol=lf
+*.xm text eol=lf
+*.m text eol=lf
+*.h text eol=lf
+Tests/*.c text eol=lf
+*.plist text eol=lf
+*.deb binary

@@ -1,8 +1,8 @@
 Package: com.koudai.weidian.grab
 Name: WeidianGrab
-Version: 0.4.3
+Version: 0.5.0
 Architecture: iphoneos-arm64
-Description: 微店买家版抓包/抢单（悬浮球 + 定时开售自动执行）
+Description: 微店 7.9.62 助手：悬浮面板、脱敏交易摘要、前台提醒/演练及用户确认的单次定时提交
 Maintainer: doimty
 Author: doimty
 Section: Tweaks

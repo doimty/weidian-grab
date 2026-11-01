@@ -1,10 +1,6 @@
 {
-    "enabled": true,
-    "mode": "capture",
-    "match": "",
-    "repeat": 200,
-    "intervalMs": 80,
-    "successContains": "",
-    "stopOnSuccess": true,
-    "maxBodyLog": 8192
+  "schema": 2,
+  "captureEnabled": true,
+  "defaultAction": "dryRun",
+  "note": "0.5.0 的实际配置和任务由悬浮面板保存在 App 沙盒；此文件仅作说明，不是设备端全局请求重放配置。"
 }

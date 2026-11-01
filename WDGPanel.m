@@ -1,4 +1,6 @@
 #import "WDGCore.h"
+#import "WDGCart.h"
+#import "WDGOrderService.h"
 
 @interface WDGPassWindow : UIWindow @end
 @implementation WDGPassWindow
@@ -123,7 +125,7 @@
     self.stateLabel=[self label:11 weight:UIFontWeightRegular];[stack addArrangedSubview:self.stateLabel];
     self.captureButton=[self button:@"自动采集" action:@selector(toggleCapture) identifier:@"WDG.CaptureToggle"];[stack addArrangedSubview:self.captureButton];
     self.sampleLabel=[self label:12 weight:UIFontWeightRegular];self.sampleLabel.accessibilityIdentifier=@"WDG.SampleSummary";[stack addArrangedSubview:self.sampleLabel];
-    self.action=[[UISegmentedControl alloc] initWithItems:@[@"到点提醒",@"本地演练",@"接口直提"]];self.action.selectedSegmentIndex=1;
+    self.action=[[UISegmentedControl alloc] initWithItems:@[@"到点提醒",@"本地演练",@"购物车预热"]];self.action.selectedSegmentIndex=1;
     [self.action addTarget:self action:@selector(actionChanged) forControlEvents:UIControlEventValueChanged];self.action.accessibilityIdentifier=@"WDG.Action";[stack addArrangedSubview:self.action];
     self.datePicker=[UIDatePicker new];self.datePicker.datePickerMode=UIDatePickerModeDateAndTime;self.datePicker.preferredDatePickerStyle=UIDatePickerStyleCompact;
     self.datePicker.locale=[[NSLocale alloc] initWithLocaleIdentifier:@"zh_CN"];self.datePicker.timeZone=NSTimeZone.localTimeZone;
@@ -145,7 +147,16 @@
     [self.captureButton setTitle:[s[@"captureEnabled"] boolValue]?@"自动采集：开启（点击暂停）":@"自动采集：暂停（点击开启）" forState:UIControlStateNormal];
     if(![self.shownSample isEqual:snapshot[@"sampleKey"]]){self.payType=nil;self.shownSample=snapshot[@"sampleKey"];[self.payButton setTitle:@"选择已采集支付参数" forState:UIControlStateNormal];}
     NSMutableArray *lines=[NSMutableArray array];
-    if(![snapshot[@"items"] count]) [lines addObject:@"未采集到订单摘要。请在 App 中进入确认页，选择商品与规格；助手只观察自然发生的数据更新。"];
+    NSArray *cartLines=WDGCartSelectedLines();
+    if(cartLines.count){
+        [lines addObject:[NSString stringWithFormat:@"购物车 %lu 件（预热可用）",(unsigned long)cartLines.count]];
+        for(NSDictionary *item in cartLines){
+            [lines addObject:[NSString stringWithFormat:@"%@ / %@ × %@",item[@"title"]?:item[@"itemRef"]?:@"商品",item[@"skuTitle"]?:item[@"skuRef"]?:@"未选规格",item[@"quantity"]?:@"?"]];
+        }
+    }
+    if(![snapshot[@"items"] count]){
+        if(!cartLines.count)[lines addObject:@"未采集到数据。进购物车或确认页停留几秒即可自动采集。"];
+    }
     else {
         [lines addObject:[NSString stringWithFormat:@"%@ · %@",snapshot[@"pageKind"]?:@"",snapshot[@"stage"]?:@""]];
         for(NSDictionary *item in snapshot[@"items"]){ [lines addObject:[NSString stringWithFormat:@"%@ / %@ × %@",item[@"title"]?:item[@"itemRef"]?:@"商品",item[@"skuTitle"]?:item[@"skuRef"]?:@"未选规格",item[@"quantity"]?:@"?"]];}
@@ -170,22 +181,41 @@
 }
 - (void)selectPayType {
     NSArray *options=WDGCore.shared.status[@"snapshot"][@"payOptions"];
-    if(options.count==0){[self alert:@"当前页尚未就绪" message:@"尚未读取到服务端确认页的提交按钮，不会猜按钮枚举值。请先进入订单确认页。 "];return;}
+    if(options.count==0){
+        // Cart mode has no confirmation page, so offer the App's own button
+        // enum values that the confirmation model declared (0-3). The user
+        // still picks explicitly; nothing is inferred from price or title.
+        UIAlertController *c=[UIAlertController alertControllerWithTitle:@"选择支付参数" message:@"购物车模式没有确认页按钮。请选择你在 App 中使用的支付方式对应的参数值。" preferredStyle:UIAlertControllerStyleActionSheet];
+        for(NSNumber *type in @[@0,@1,@2,@3]){
+            [c addAction:[UIAlertAction actionWithTitle:[NSString stringWithFormat:@"参数 %@",type] style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *a){
+                self.payType=type;[self.payButton setTitle:[NSString stringWithFormat:@"接口支付参数：%@",type] forState:UIControlStateNormal];
+            }]];
+        }
+        [c addAction:[UIAlertAction actionWithTitle:@"取消" style:UIAlertActionStyleCancel handler:nil]];
+        c.popoverPresentationController.sourceView=self.card;c.popoverPresentationController.sourceRect=self.card.bounds;
+        [self.window.rootViewController presentViewController:c animated:YES completion:nil];
+        return;
+    }
     UIAlertController *a=[UIAlertController alertControllerWithTitle:@"选择当前页按钮" message:@"这里只选择按钮，不执行点击或下单。" preferredStyle:UIAlertControllerStyleAlert];
     for(NSDictionary *o in options){NSString *title=o[@"title"]?:@"按钮";NSNumber *type=o[@"type"];if(![type isKindOfClass:NSNumber.class])continue;[a addAction:[UIAlertAction actionWithTitle:[NSString stringWithFormat:@"%@（%@）",title,type] style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *action){self.payType=type;[self.payButton setTitle:[NSString stringWithFormat:@"接口支付参数：%@",title] forState:UIControlStateNormal];}]];}
     [a addAction:[UIAlertAction actionWithTitle:@"取消" style:UIAlertActionStyleCancel handler:nil]];[self.window.rootViewController presentViewController:a animated:YES completion:nil];
 }
 - (void)schedule {
-    NSString *action=@[@"reminder",@"dryRun",@"serviceOnce"][self.action.selectedSegmentIndex];
+    NSString *action=@[@"reminder",@"dryRun",@"preheatOnce"][self.action.selectedSegmentIndex];
     NSDate *date=self.datePicker.date;
     void (^arm)(void)=^{NSError *error=nil;if(![WDGCore.shared armAt:date action:action payType:self.payType error:&error])[self alert:@"任务未设置" message:error.localizedDescription];};
-    if(![action isEqual:@"serviceOnce"]){arm();return;}
-    NSDictionary *snapshot=WDGCore.shared.status[@"snapshot"];
+    if(![action isEqual:@"preheatOnce"]){arm();return;}
+    NSArray *lines=WDGCartSelectedLines();
     NSString *reason=nil;
-    if(!WDGInterfaceTargetReady(snapshot[@"sampleKey"],self.payType,&reason)){[self alert:@"请先完成确认页采集" message:reason?:@"页面或按钮尚未验证"];return;}
+    if(!lines.count){[self alert:@"请先打开购物车" message:@"购物车预热需要先让插件采集到购物车商品。请进入购物车页，保持几秒后回来。"];return;}
+    if(![WDGOrderService preheatReady:&reason]){[self alert:@"预热接口未就绪" message:reason?:@"接口不可用"];return;}
     NSDateFormatter *df=[NSDateFormatter new];df.dateFormat=@"yyyy-MM-dd HH:mm:ss ZZZZ";
-    NSString *review=[NSString stringWithFormat:@"%@\n\n金额：%@\n执行时间：%@\n\n到点直接提交 CreateOrder 接口，可能产生真实订单及所选支付方式的服务端效果。插件不执行页面点击、不打开支付链接。确认后才设置接口任务。",self.sampleLabel.text,snapshot[@"totalPrice"]?:@"待确认",[df stringFromDate:date]];
-    UIAlertController *a=[UIAlertController alertControllerWithTitle:@"确认定时接口直提" message:review preferredStyle:UIAlertControllerStyleAlert];
+    NSMutableString *review=[NSMutableString stringWithFormat:@"购物车 %lu 件：\n",(unsigned long)lines.count];
+    for(NSDictionary *line in lines){
+        [review appendFormat:@"· %@ / %@ × %@\n",line[@"title"]?:@"商品",line[@"skuTitle"]?:@"未选规格",line[@"quantity"]?:@"?"];
+    }
+    [review appendFormat:@"\n执行时间：%@\n支付参数：%@\n\n到点先调确认接口，再用返回数据调 CreateOrder。可能产生真实订单及所选支付方式的服务端效果。插件不执行页面点击、不打开支付链接。",[df stringFromDate:date],self.payType?:@"未选择"];
+    UIAlertController *a=[UIAlertController alertControllerWithTitle:@"确认购物车预热直提" message:review preferredStyle:UIAlertControllerStyleAlert];
     [a addAction:[UIAlertAction actionWithTitle:@"取消" style:UIAlertActionStyleCancel handler:nil]];
     [a addAction:[UIAlertAction actionWithTitle:@"确认以上商品及时间" style:UIAlertActionStyleDestructive handler:^(__unused UIAlertAction *v){arm();}]];
     [self.window.rootViewController presentViewController:a animated:YES completion:nil];

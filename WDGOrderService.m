@@ -92,6 +92,7 @@ static NSDictionary *WDGSReceipt(BOOL success,id response,id error) {
 @property(nonatomic,strong) NSNumber *payType;
 @property(nonatomic,copy) NSString *taskID;
 @property(nonatomic) NSTimeInterval preparedUptime;
+@property(nonatomic) BOOL preheatMode;
 @end
 @implementation WDGOrderService {
     WDGServiceState _state;
@@ -105,6 +106,33 @@ static NSDictionary *WDGSReceipt(BOOL success,id response,id error) {
     ok=ok&&strcmp(WDGSType(block),"@?")==0;
     if(reason)*reason=ok?nil:@"创建订单 Service 不存在或 ABI 与已验证版本不一致";
     return ok;
+}
++ (BOOL)preheatReady:(NSString **)reason {
+    Class cls=NSClassFromString(@"VDTradeConfOrderService");
+    Method m=cls?class_getClassMethod(cls,NSSelectorFromString(@"confirmOrderWithRequestDO:result:")):NULL;
+    // Same result ABI as create: confirm hands the caller's block straight to
+    // request:context:, whose success/failure trampolines call (BOOL,id,error).
+    BOOL ok=WDGSTyped(m,4,'v')&&WDGSArgument(m,2,'@');
+    char block[256]={0};if(m)method_getArgumentType(m,3,block,sizeof(block));
+    ok=ok&&strcmp(WDGSType(block),"@?")==0;
+    if(ok&&reason)*reason=nil;
+    else if(!ok&&reason)*reason=@"确认订单 Service 不存在或 ABI 不匹配";
+    return ok;
+}
++ (instancetype)preparePreheatRequest:(id)request sampleKey:(NSString *)sampleKey payType:(NSNumber *)payType error:(NSError **)error {
+    NSString *reason=nil;
+    if(!NSThread.isMainThread||![self preheatReady:&reason]||![self runtimeReady:&reason]){if(error)*error=WDGServiceError(9,reason?:@"请在主线程准备预热任务");return nil;}
+    Class rc=NSClassFromString(@"VDTradeConfirmOrderRequestDO");
+    if(!rc||![request isKindOfClass:rc]||!sampleKey.length||![payType isKindOfClass:NSNumber.class]){if(error)*error=WDGServiceError(10,@"预热所需请求模型不完整");return nil;}
+    Method setter=class_getInstanceMethod(object_getClass(request),@selector(setPayButtonType:));
+    if(!WDGSTyped(setter,3,'v')||!WDGSArgument(setter,2,'Q')){if(error)*error=WDGServiceError(11,@"payButtonType 未通过 ABI 校验");return nil;}
+    NSData *a=WDGSMemorySnapshot(request);
+    if(!a){if(error)*error=WDGServiceError(12,@"请求模型序列化未验证，未创建预热任务");return nil;}
+    WDGOrderService *s=[self new];
+    s.requestModel=request;s.requestBaseline=a;s.sampleKey=sampleKey;s.payType=payType;
+    s.preheatMode=YES;s.preparedUptime=NSProcessInfo.processInfo.systemUptime;
+    s->_generation=++WDGNextGeneration;WDGServicePrepare(&s->_state,s->_generation);
+    return s;
 }
 + (instancetype)prepareRequest:(id)request confirmation:(id)confirmation sampleKey:(NSString *)sampleKey payType:(NSNumber *)payType error:(NSError **)error {
     NSString *reason=nil;
@@ -128,6 +156,7 @@ static NSDictionary *WDGSReceipt(BOOL success,id response,id error) {
     if(![WDGSMemorySnapshot(self.requestModel) isEqual:self.requestBaseline]||![WDGSMemorySnapshot(self.confirmationModel) isEqual:self.confirmationBaseline]){if(error)*error=WDGServiceError(7,@"采集后订单参数已变化，请重新确认任务");return NO;}
     if(!WDGServiceDispatch(&_state,_generation)){if(error)*error=WDGServiceError(8,@"当前接口任务已消费，不重复提交");return NO;}
     self.taskID=taskID;
+    if(self.preheatMode){[self runPreheatWithTaskID:taskID completion:completion error:error];return YES;}
     id request=self.requestModel,confirmation=self.confirmationModel;
     SEL setter=@selector(setPayButtonType:),getter=@selector(payButtonType);
     NSUInteger saved=((NSUInteger(*)(id,SEL))objc_msgSend)(request,getter);
@@ -156,6 +185,84 @@ static NSDictionary *WDGSReceipt(BOOL success,id response,id error) {
         completion(@{@"state":@"unknown",@"apiSucceeded":@NO,@"message":@"Service 调用异常，结果待核对；未自动重试",@"paymentInvoked":@NO});
     }
     return YES; // Invocation only: Core waits for our own network result block.
+}
+// Preheat: ask the App to confirm first, turn the returned dictionary into the
+// confirmation model, then submit. Both stages share the (BOOL,id,error) ABI.
+- (void)runPreheatWithTaskID:(NSString *)taskID completion:(WDGOrderReply)completion error:(NSError **)error {
+    id request=self.requestModel;
+    NSUInteger saved=((NSUInteger(*)(id,SEL))objc_msgSend)(request,@selector(payButtonType));
+    ((void(*)(id,SEL,NSUInteger))objc_msgSend)(request,@selector(setPayButtonType:),self.payType.unsignedIntegerValue);
+    __block BOOL confirmDone=NO;
+    __block BOOL submitStarted=NO;
+    WDGOrderService *strongSelf=self;
+    void (^finish)(NSDictionary *)=^(NSDictionary *receipt){
+        dispatch_async(dispatch_get_main_queue(),^{
+            ((void(*)(id,SEL,NSUInteger))objc_msgSend)(request,@selector(setPayButtonType:),saved);
+            strongSelf.requestModel=nil;strongSelf.confirmationModel=nil;
+            strongSelf.requestBaseline=nil;strongSelf.confirmationBaseline=nil;
+            completion(receipt);
+        });
+    };
+    void (^confirmReply)(BOOL,id,id)=^(BOOL ok,id result,id nativeError){
+        dispatch_async(dispatch_get_main_queue(),^{
+            if(confirmDone){return;}
+            confirmDone=YES;
+            if(!ok||nativeError){
+                if(WDGServiceResolve(&strongSelf->_state,strongSelf->_generation,NO))
+                    finish(WDGSReceipt(NO,nil,nativeError));
+                return;
+            }
+            // Static evidence (research/confirm-abi/CONFIRM-ABI.md): confirm
+            // does NOT set a resultClass, so the block receives the raw JSON
+            // dictionary. The App's own caller converts it with
+            // yy_modelWithDictionary:, so we try that first, then JSON.
+            Class confirmClass=NSClassFromString(@"VDTradeConfirmOrderDO");
+            id model=nil;
+            if([result isKindOfClass:NSDictionary.class]&&confirmClass){
+                for(NSString *selName in @[@"yy_modelWithDictionary:",@"yy_modelWithJSON:"]){
+                    SEL conv=NSSelectorFromString(selName);
+                    Method m=class_getClassMethod(confirmClass,conv);
+                    if(!m||method_getNumberOfArguments(m)!=3)continue;
+                    @try{model=((id(*)(id,SEL,id))objc_msgSend)(confirmClass,conv,result);}@catch(__unused NSException *e){model=nil;}
+                    if([model isKindOfClass:confirmClass])break;
+                    model=nil;
+                }
+            }
+            if(!model||![model isKindOfClass:confirmClass]){
+                if(WDGServiceResolve(&strongSelf->_state,strongSelf->_generation,NO))
+                    finish(@{@"state":@"unknown",@"apiSucceeded":@NO,@"paymentInvoked":@NO,
+                             @"message":@"确认接口已返回，但未能生成确认模型；为避免错误提交，本次不发送创建订单，请人工核对"});
+                return;
+            }
+            if(submitStarted){return;}
+            submitStarted=YES;
+            strongSelf.confirmationModel=model;
+            void (^createReply)(BOOL,id,id)=^(BOOL cok,id cresult,id cerror){
+                dispatch_async(dispatch_get_main_queue(),^{
+                    if(!WDGServiceResolve(&strongSelf->_state,strongSelf->_generation,cok))return;
+                    ++WDGServiceReplies;
+                    finish(WDGSReceipt(cok,cresult,cerror));
+                });
+            };
+            @try{
+                ++WDGServiceCalls;
+                ((void(*)(id,SEL,id,id,id))objc_msgSend)(NSClassFromString(@"VDTradeConfOrderService"),
+                    NSSelectorFromString(WDGCreateSelector),request,model,[createReply copy]);
+            }@catch(__unused NSException *e){
+                WDGServiceTimeout(&strongSelf->_state,strongSelf->_generation);
+                finish(@{@"state":@"unknown",@"apiSucceeded":@NO,@"paymentInvoked":@NO,
+                         @"message":@"创建订单调用异常，结果待核对；未自动重试"});
+            }
+        });
+    };
+    @try{
+        ((void(*)(id,SEL,id,id))objc_msgSend)(NSClassFromString(@"VDTradeConfOrderService"),
+            NSSelectorFromString(@"confirmOrderWithRequestDO:result:"),request,[confirmReply copy]);
+    }@catch(__unused NSException *e){
+        WDGServiceTimeout(&_state,_generation);
+        finish(@{@"state":@"unknown",@"apiSucceeded":@NO,@"paymentInvoked":@NO,
+                 @"message":@"确认订单调用异常，未发出创建订单"});
+    }
 }
 - (void)expireUnresolvedTask:(NSString *)taskID {
     if([self.taskID isEqualToString:taskID]){

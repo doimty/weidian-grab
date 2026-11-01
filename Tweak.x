@@ -1,6 +1,7 @@
 // RootHide tweak bootstrap. Constructors work normally under libhooker;
 // delay UIKit work until the application's main runloop is ready.
 #import "WDGCore.h"
+#import "WDGCart.h"
 
 __attribute__((constructor))
 static void WDGInitialize(void) {
@@ -12,6 +13,7 @@ static void WDGInitialize(void) {
                 WDGCore *core=[WDGCore shared];
                 [core recordEvent:@"bootstrap" details:@{@"version":WDGVersion,@"build":WDGBuildID}];
                 WDGInstallTradeObservers();
+                WDGCartInstallObservers();
                 WDGShowOverlay();
             });
         });

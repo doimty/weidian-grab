@@ -1,8 +1,8 @@
 Package: com.koudai.weidian.grab
 Name: WeidianGrab
-Version: 0.6.0
+Version: 0.7.0
 Architecture: iphoneos-arm64
-Description: 微店 7.9.62 接口直提：悬浮面板采集、定时复用原生 CreateOrder 接口、单次提交不重试
+Description: 微店 7.9.62 购物车预热直提：悬浮面板配置、到点确认后直接调用 CreateOrder 接口
 Maintainer: doimty
 Author: doimty
 Section: Tweaks

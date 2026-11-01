@@ -2,12 +2,15 @@
 #import "WDGBuild.h"
 #import "WDGTaskGate.h"
 #import "WDGOrderService.h"
+#import "WDGCart.h"
 #import <fcntl.h>
 #import <unistd.h>
 #import <errno.h>
+#import <objc/runtime.h>
+#import <objc/message.h>
 
 NSString * const WDGStateDidChange = @"WDGStateDidChange";
-NSString * const WDGVersion = @"0.6.0";
+NSString * const WDGVersion = @"0.7.0";
 #ifndef WDG_BUILD_ID
 #define WDG_BUILD_ID "local-unbuilt"
 #endif
@@ -81,7 +84,7 @@ static NSError *WGDError(NSInteger code, NSString *message) {
     }
     return @{@"version":WDGVersion,@"build":WDGBuildID,@"captureEnabled":@(self.captureEnabled),
              @"snapshot":self.snapshot?:@{},@"task":[self.task copy],@"events":[self.recent copy],
-             @"firedCount":@(self.firedCount),@"ioError":self.ioError?:@"",@"storagePath":self.storagePath,@"receipt":self.lastReceipt?:@{},@"transport":[WDGOrderService diagnostics]};
+             @"firedCount":@(self.firedCount),@"ioError":self.ioError?:@"",@"storagePath":self.storagePath,@"receipt":self.lastReceipt?:@{},@"transport":[WDGOrderService diagnostics],@"cart":WDGCartDiagnostics()};
 }
 - (void)persist {
     // Call only on the main queue. All persisted fields are our own metadata or
@@ -152,7 +155,7 @@ static NSError *WGDError(NSInteger code, NSString *message) {
     NSTimeInterval delta=[date timeIntervalSinceNow];
     if([self.task[@"state"] isEqual:@"sending"]){if(error)*error=WGDError(3,@"上一笔接口请求正在等待结果，请勿覆盖");return NO;}
     NSString *reason=nil;
-    if(![@[@"reminder",@"dryRun",@"serviceOnce"] containsObject:action])reason=@"未知任务类型";
+    if(![@[@"reminder",@"dryRun",@"serviceOnce",@"preheatOnce"] containsObject:action])reason=@"未知任务类型";
     else if(delta<2||delta>86400)reason=@"任务时间请设在 2 秒至 24 小时以内";
     else if(UIApplication.sharedApplication.applicationState!=UIApplicationStateActive)reason=@"请保持微店在前台";
     else if([action isEqual:@"serviceOnce"]){
@@ -165,11 +168,23 @@ static NSError *WGDError(NSInteger code, NSString *message) {
             if(!WDGInterfaceTargetReady(self.snapshot[@"sampleKey"],payType,&bindingReason)) reason=bindingReason?:@"当前页面尚未完成验证";
         }
     }
+    else if([action isEqual:@"preheatOnce"]){
+        if(WDGCartSelectedLines().count==0)reason=@"请先在购物车页让插件采集到商品";
+        else if(!payType)reason=@"请选择支付参数";
+        else {
+            NSString *preheatReason=nil;
+            if(![WDGOrderService preheatReady:&preheatReason])reason=preheatReason?:@"预热接口未就绪";
+        }
+    }
     if([action isEqual:@"serviceOnce"] && delta>590)reason=@"接口参数本轮只验证十分钟有效期，请把任务设在十分钟以内";
+    if([action isEqual:@"preheatOnce"] && delta>43200)reason=@"预热任务请设在 12 小时以内";
     if(reason){if(error)*error=WGDError(2,reason);return NO;}
     WDGOrderService *prepared=nil;
     if([action isEqual:@"serviceOnce"]){
         prepared=WDGPrepareObservedInterface(self.snapshot[@"sampleKey"],payType,error);
+        if(!prepared)return NO;
+    } else if([action isEqual:@"preheatOnce"]){
+        prepared=[self preparePreheatWithPayType:payType error:error];
         if(!prepared)return NO;
     }
     [self cancelTask:@"新任务替代旧任务"];
@@ -180,6 +195,38 @@ static NSError *WGDError(NSInteger code, NSString *message) {
     [[NSRunLoop mainRunLoop] addTimer:self.timer forMode:NSRunLoopCommonModes];
     [self recordEvent:@"task_armed" details:@{@"taskId":self.task[@"id"],@"action":action}];
     return YES;
+}
+// Build a requestDO from the captured cart lines, so a pre-sale item can be
+// submitted at the sale instant without visiting the confirmation page.
+- (WDGOrderService *)preparePreheatWithPayType:(NSNumber *)payType error:(NSError **)error {
+    NSArray<NSDictionary *> *lines=WDGCartSelectedLines();
+    NSString *key=WDGCartSnapshotKey();
+    if(!lines.count||!key.length){if(error)*error=WGDError(20,@"购物车采集为空，请先打开购物车页");return nil;}
+    Class reqClass=NSClassFromString(@"VDTradeConfirmOrderRequestDO");
+    Class itemClass=NSClassFromString(@"VDTradeConfOrderRequestItemDO");
+    if(!reqClass||!itemClass){if(error)*error=WGDError(21,@"订单请求模型不可用");return nil;}
+    SEL fromJSON=NSSelectorFromString(@"yy_modelWithJSON:");
+    Method m=class_getClassMethod(reqClass,fromJSON);
+    if(!m||method_getNumberOfArguments(m)!=3){if(error)*error=WGDError(22,@"请求模型构造入口不可用");return nil;}
+    // Raw ids are recovered from the session-salted refs through the same map
+    // the cart module kept in memory; nothing sensitive is written to disk.
+    NSMutableArray *items=[NSMutableArray array];
+    for(NSDictionary *line in lines){
+        NSDictionary *raw=WDGCartRawLine(line[@"itemRef"]);
+        if(!raw){continue;}
+        NSMutableDictionary *json=[NSMutableDictionary dictionary];
+        json[@"item_id"]=raw[@"itemId"]?:@"";
+        json[@"item_sku_id"]=raw[@"skuId"]?:@"";
+        json[@"quantity"]=raw[@"count"]?:@"1";
+        if(raw[@"priceType"])json[@"price_type"]=raw[@"priceType"];
+        id item=((id(*)(id,SEL,id))objc_msgSend)(itemClass,fromJSON,json);
+        if(item)[items addObject:item];
+    }
+    if(!items.count){if(error)*error=WGDError(23,@"购物车商品未能转换为请求条目");return nil;}
+    NSDictionary *requestJSON=@{@"items":items};
+    id request=((id(*)(id,SEL,id))objc_msgSend)(reqClass,fromJSON,requestJSON);
+    if(!request||![request isKindOfClass:reqClass]){if(error)*error=WGDError(24,@"请求模型构造失败");return nil;}
+    return [WDGOrderService preparePreheatRequest:request sampleKey:key payType:payType error:error];
 }
 - (void)tick:(NSTimer *)timer {
     if(![self.task[@"state"] isEqual:@"armed"]){[timer invalidate];self.timer=nil;return;}

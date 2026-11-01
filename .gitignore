@@ -13,3 +13,5 @@ manifest.json
 toolchain.json
 build.log
 out/
+research/confirm-abi/*.txt
+research/confirm-abi/objc-verbose.txt

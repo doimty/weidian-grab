@@ -1,4 +1,4 @@
-# WeidianGrab 0.9.0
+# WeidianGrab 0.9.1
 
 微店买家版 7.9.62 / iOS15+ / RootHide。悬浮面板用于选择购物车目标、设定时间和最高实付金额；执行路径直接调用 App 原生网络 Service，不模拟点击，不调用订单页的提交按钮方法。
 
@@ -8,6 +8,19 @@
 2. 主界面只有商品、开抢时间、最高实付金额（含运费）和一个“准备抢购”按钮。时间与金额直接在主卡点开修改。
 3. 核对确认框后才设置任务。右上角“···”收纳本地参数校验、五秒演练、诊断导出，以及“并发：单路/双路竞速”。
 4. 到点前保持微店在前台。悬浮卡可收起，执行不依赖订单确认页。
+
+## 对时（0.9.1）
+
+这是**读取微店已有的时钟校准缓存**，不是新增联网校时接口、NTP 测量或网络 RTT 补偿。任务卡及“···”中可查看来源与状态。
+
+- 原生 `currentServerTime` = 手机 Unix 毫秒 + `timeOffsetMS`。对时换算为 `本地执行时刻 = 所选服务端时刻 - 偏差`，不是人为提前一秒。
+- 只有原生 `serverTimeMS` 样本存在、最近十分钟更新、读取稳定且偏差合理才使用它。零偏差也必须有有效样本。
+- 仅有历史缓存、样本过期、方法 ABI 不匹配或时钟变动时，明确显示“本地时间”，不伪称已同步；确认框列出本次采用的模式。
+- 点击确认时重新核验展示过的偏差；若改变则需要重新确认，不悄悄换时刻。任务冻结本地到期时间，后续刷新只影响新任务。
+- 设定时刻前再次核对有效样本与偏差；同步模式样本失效或墙钟变化时取消未发出的动作，不重试订单。
+- 原生源码在 `status.code == 40` 的响应校正分支调用 `updateServerTime:`，正常请求未必产生新样本。读取缓存不会强制触发该分支。
+
+这种复用可减少已知本地时差带来的错位，但没有测出网络单程延迟、服务端时钟绝对误差或开售业务节点偏差；不保证毫秒精度、抢购结果或库存。版本不增加提前连发、并发路数和重试波次。
 
 ## 并发竞速
 
@@ -35,7 +48,7 @@
   → 接收接口结果，停止
 ```
 
-未知响应、缺地址、待验证/协议、仍未开放、金额超限或参数变化时停止。不是无限轮询，不处理验证码，不改服务端开售限制。预热失败会直接停止，只有确认响应明确 `cannot_submit` 为 true 才在到点追加一次确认。时间按设备时钟，不宣称服务器同步或硬实时。
+未知响应、缺地址、待验证/协议、仍未开放、金额超限或参数变化时停止。不是无限轮询，不处理验证码，不改服务端开售限制。预热失败会直接停止，只有确认响应明确 `cannot_submit` 为 true 才在到点追加一次确认。时间以确认框明确显示的原生缓存校正或手机时间为准，不宣称绝对服务器同步或硬实时。
 
 协议判断与微店控制器一致：只看原生 `getRealAgreementInfos` 筛选后的协议；该结果非空且 `isAgreementChecked` 为 false 时停止。原始 `agreement_info_list` 非空不再单独触发阻止。插件不代设同意状态；如微店确实要求确认，会提示“此订单有交易协议待确认，请在微店确认页查看”。
 
@@ -65,8 +78,8 @@ clang -fobjc-arc -fblocks -Wall -Wextra -Werror -Wno-unused-parameter \
   -o /tmp/cart-preheat-mock
 /tmp/cart-preheat-mock
 make clean && make package THEOS_PACKAGE_SCHEME=roothide FINALPACKAGE=1
-python3 scripts/validate_deb.py packages/com.koudai.weidian.grab_0.9.0_iphoneos-arm64e.deb \
-  --version 0.9.0 --expected-sdk 16.4 --output manifest.json
+python3 scripts/validate_deb.py packages/com.koudai.weidian.grab_0.9.1_iphoneos-arm64e.deb \
+  --version 0.9.1 --expected-sdk 16.4 --output manifest.json
 ```
 
 固定 roothide/theos `88506b2c22e9e07dd4ed055f23c9e398a117a2c7`、arm64+arm64e、最低 iOS15。SDK归档名16.5，元数据实际16.4。CI先执行模拟/门控测试，再出精确包并核验依赖、filter、脚本与哈希；完整日志随产物保存。

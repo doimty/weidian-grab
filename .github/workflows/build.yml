@@ -21,8 +21,8 @@ jobs:
       THEOS_PACKAGE_SCHEME: roothide
       FINALPACKAGE: '1'
       HOMEBREW_NO_AUTO_UPDATE: '1'
-      PACKAGE_VERSION: '0.9.0'
-      PACKAGE_DEB: packages/com.koudai.weidian.grab_0.9.0_iphoneos-arm64e.deb
+      PACKAGE_VERSION: '0.9.1'
+      PACKAGE_DEB: packages/com.koudai.weidian.grab_0.9.1_iphoneos-arm64e.deb
       # Same RootHide Theos revision as the working OKOK build.
       # Provenance: https://github.com/roothide/theos/commit/88506b2c22e9e07dd4ed055f23c9e398a117a2c7
       THEOS_COMMIT: 88506b2c22e9e07dd4ed055f23c9e398a117a2c7
@@ -187,6 +187,15 @@ jobs:
             -o "$RUNNER_TEMP/weidian-cart-preheat-mock" 2>&1 | tee cart-preheat-tests.log
           "$RUNNER_TEMP/weidian-cart-preheat-mock" 2>&1 | tee -a cart-preheat-tests.log
 
+      - name: Run passive server clock and deadline conversion tests
+        run: |
+          set -euo pipefail
+          xcrun --sdk macosx clang -fobjc-arc -fblocks -Wall -Wextra -Werror \
+            -Wno-unused-parameter -framework Foundation \
+            Tests/clock_mock.m WDGClock.m -o "$RUNNER_TEMP/weidian-clock-mock" \
+            2>&1 | tee clock-tests.log
+          "$RUNNER_TEMP/weidian-clock-mock" 2>&1 | tee -a clock-tests.log
+
       - name: Clean and build exact package with full log
         run: |
           set -euo pipefail
@@ -209,12 +218,13 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: weidian-grab-roothide-0.9.0
+          name: weidian-grab-roothide-0.9.1
           path: |
-            packages/com.koudai.weidian.grab_0.9.0_iphoneos-arm64e.deb
+            packages/com.koudai.weidian.grab_0.9.1_iphoneos-arm64e.deb
             manifest.json
             toolchain.json
             build.log
             cart-preheat-tests.log
+            clock-tests.log
             ${{ runner.temp }}/weidian-grab-state-tests.log
           if-no-files-found: error

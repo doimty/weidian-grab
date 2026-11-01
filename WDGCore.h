@@ -12,6 +12,9 @@ FOUNDATION_EXPORT NSString * const WDGBuildID;
 @property (nonatomic, readonly) NSDictionary *status;
 @property (nonatomic, readonly) NSString *storagePath;
 - (void)setCaptureEnabled:(BOOL)enabled;
+// Explicit passive read for the panel/new tasks; never sends a request or
+// changes an already armed deadline. Status itself does not read native state.
+- (void)refreshServerClock;
 - (void)recordEvent:(NSString *)event details:(NSDictionary *)details;
 - (void)acceptSnapshot:(NSDictionary *)snapshot;
 - (void)clearSnapshot;
@@ -21,6 +24,9 @@ FOUNDATION_EXPORT NSString * const WDGBuildID;
 // CreateOrder requests for the same cart template. The server may create more
 // than one order. Validated before any request is sent.
 - (BOOL)armCartAt:(NSDate *)date maximumTotal:(NSDecimalNumber *)maximumTotal concurrentLanes:(NSUInteger)lanes error:(NSError **)error;
+// Freeze Review's mode/offset. Confirmation re-reads native state; a changed
+// native offset requires a new Review, while displayed local mode stays local.
+- (BOOL)armCartAt:(NSDate *)date maximumTotal:(NSDecimalNumber *)maximumTotal concurrentLanes:(NSUInteger)lanes clockSnapshot:(NSDictionary *)clockSnapshot error:(NSError **)error;
 - (void)cancelTask:(NSString *)reason;
 - (NSString * _Nullable)exportReport:(NSError **)error;
 @end

@@ -3,6 +3,7 @@
 #import "WDGTaskGate.h"
 #import "WDGOrderService.h"
 #import "WDGCart.h"
+#import "WDGClock.h"
 #import <fcntl.h>
 #import <unistd.h>
 #import <errno.h>
@@ -10,7 +11,7 @@
 #import <objc/message.h>
 
 NSString * const WDGStateDidChange = @"WDGStateDidChange";
-NSString * const WDGVersion = @"0.9.0";
+NSString * const WDGVersion = @"0.9.1";
 #ifndef WDG_BUILD_ID
 #define WDG_BUILD_ID "local-unbuilt"
 #endif
@@ -18,6 +19,36 @@ NSString * const WDGBuildID = @WDG_BUILD_ID;
 
 static NSError *WGDError(NSInteger code, NSString *message) {
     return [NSError errorWithDomain:@"WeidianGrab" code:code userInfo:@{NSLocalizedDescriptionKey:message}];
+}
+
+static BOOL WDGNativeClockMode(NSDictionary *sample) {
+    return [sample[@"valid"] isKindOfClass:NSNumber.class] && [sample[@"valid"] boolValue] && [sample[@"status"] isEqual:@"native_recent"] &&
+        [sample[@"offsetMs"] isKindOfClass:NSNumber.class] && isfinite([sample[@"offsetMs"] doubleValue]);
+}
+static BOOL WDGClockOffsetsMatch(NSDictionary *a, NSDictionary *b) {
+    if(!WDGNativeClockMode(a)||!WDGNativeClockMode(b)||![a[@"offsetMs"] isEqualToNumber:b[@"offsetMs"]])return NO;
+    if(![(a[@"clockGeneration"]?:@0) isEqual:(b[@"clockGeneration"]?:@0)])return NO;
+    NSNumber *rawA=[a[@"rawOffsetMs"] isKindOfClass:NSNumber.class]?a[@"rawOffsetMs"]:a[@"offsetMs"];
+    NSNumber *rawB=[b[@"rawOffsetMs"] isKindOfClass:NSNumber.class]?b[@"rawOffsetMs"]:b[@"offsetMs"];
+    return [rawA isEqualToNumber:rawB];
+}
+// Age the cached observation without touching the native clock. The pure
+// converter also detects a wall/uptime discrepancy since the observation.
+static NSDictionary *WDGCachedClockStatus(NSDictionary *sample) {
+    if(!sample)return @{@"valid":@NO,@"status":@"unavailable",@"offsetMs":NSNull.null,
+        @"reason":@"尚无有效校准样本",@"source":@"none",@"updatedAtServerMs":NSNull.null,
+        @"sampledAt":@0,@"sampledUptime":@0,@"ageMs":NSNull.null};
+    NSMutableDictionary *result=[sample mutableCopy];
+    double elapsed=NSProcessInfo.processInfo.systemUptime-[sample[@"sampledUptime"] doubleValue];
+    if([sample[@"ageMs"] isKindOfClass:NSNumber.class]&&isfinite(elapsed))
+        result[@"ageMs"]=@([sample[@"ageMs"] doubleValue]+MAX(0,elapsed)*1000);
+    NSString *reason=nil;
+    if(WDGNativeClockMode(sample)&&!WDGLocalDeadlineFromClock(NSDate.date,sample,&reason)){
+        result[@"valid"]=@NO;result[@"offsetMs"]=NSNull.null;
+        result[@"status"]=elapsed>5?@"stale":@"clock_changed";
+        result[@"reason"]=reason?:@"时钟样本已失效，请重新读取";
+    }
+    return [result copy];
 }
 
 @interface WDGCore ()
@@ -34,6 +65,9 @@ static NSError *WGDError(NSInteger code, NSString *message) {
 @property (nonatomic,copy) NSDictionary *lastReceipt;
 @property (nonatomic,strong) NSDecimalNumber *cartMaximum;
 @property (nonatomic) NSUInteger cartLanes;
+@property (nonatomic,copy) NSDictionary *serverClock;
+@property (nonatomic,copy) NSDictionary *cartClockSnapshot;
+@property (nonatomic,strong) NSDate *cartLocalDue;
 @property (nonatomic) BOOL cancellingTask;
 @end
 
@@ -88,7 +122,13 @@ static NSError *WGDError(NSInteger code, NSString *message) {
     }
     return @{@"version":WDGVersion,@"build":WDGBuildID,@"captureEnabled":@(self.captureEnabled),
              @"snapshot":self.snapshot?:@{},@"task":[self.task copy],@"events":[self.recent copy],
-             @"firedCount":@(self.firedCount),@"ioError":self.ioError?:@"",@"storagePath":self.storagePath,@"receipt":self.lastReceipt?:@{},@"transport":[WDGOrderService diagnostics],@"cart":WDGCartDiagnostics()};
+             @"firedCount":@(self.firedCount),@"ioError":self.ioError?:@"",@"storagePath":self.storagePath,@"receipt":self.lastReceipt?:@{},@"transport":[WDGOrderService diagnostics],@"cart":WDGCartDiagnostics(),@"clock":WDGCachedClockStatus(self.serverClock)};
+}
+- (void)refreshServerClock {
+    if(!NSThread.isMainThread){dispatch_async(dispatch_get_main_queue(), ^{[self refreshServerClock];});return;}
+    self.serverClock=[WDGReadServerClock() copy];
+    // A passive display refresh never reconfigures a task or its service.
+    [NSNotificationCenter.defaultCenter postNotificationName:WDGStateDidChange object:self];
 }
 - (void)persist {
     // Call only on the main queue. All persisted fields are our own metadata or
@@ -159,16 +199,42 @@ static NSError *WGDError(NSInteger code, NSString *message) {
 }
 - (BOOL)armCartAt:(NSDate *)date maximumTotal:(NSDecimalNumber *)maximumTotal concurrentLanes:(NSUInteger)lanes error:(NSError **)error {
     if(!NSThread.isMainThread){if(error)*error=WGDError(1,@"请在主线程设置任务");return NO;}
+    return [self armCartAt:date maximumTotal:maximumTotal concurrentLanes:lanes clockSnapshot:WDGReadServerClock() error:error];
+}
+- (BOOL)armCartAt:(NSDate *)date maximumTotal:(NSDecimalNumber *)maximumTotal concurrentLanes:(NSUInteger)lanes clockSnapshot:(NSDictionary *)clockSnapshot error:(NSError **)error {
+    if(!NSThread.isMainThread){if(error)*error=WGDError(1,@"请在主线程设置任务");return NO;}
     if(lanes!=1&&lanes!=2){if(error)*error=WGDError(30,@"并发只支持单路或双路竞速");return NO;}
+    NSDictionary *review=[clockSnapshot copy],*fresh=[WDGReadServerClock() copy];
+    self.serverClock=fresh;
+    NSDate *localDue=date;NSDictionary *chosen=review;
+    if(WDGNativeClockMode(review)){
+        NSString *reason=nil;
+        // Do not convert the Review observation: it may be >5s old by now.
+        // Same raw offset + a valid fresh observation preserves exactly what
+        // was displayed, without ever silently falling back to local time.
+        if(!WDGClockOffsetsMatch(review,fresh)||!(localDue=WDGLocalDeadlineFromClock(date,fresh,&reason))){
+            if(error)*error=WGDError(31,[NSString stringWithFormat:@"%@；请重新打开确认页核对",reason?:@"微店时钟样本或时差已变化"]);return NO;
+        }
+        chosen=fresh;
+    } else {
+        // A Review that explicitly displayed local fallback stays local even
+        // if the App has acquired a valid native observation in the meantime.
+        NSMutableDictionary *local=[(review?:WDGCachedClockStatus(nil)) mutableCopy];
+        local[@"valid"]=@NO;local[@"offsetMs"]=NSNull.null;chosen=[local copy];
+    }
+    self.cartClockSnapshot=chosen;self.cartLocalDue=localDue;
     self.cartMaximum=maximumTotal;self.cartLanes=lanes;
     BOOL armed=[self armAt:date action:@"preheatOnce" payType:nil error:error];
-    self.cartMaximum=nil;self.cartLanes=1;return armed;
+    self.cartMaximum=nil;self.cartLanes=1;self.cartLocalDue=nil;self.cartClockSnapshot=nil;return armed;
 }
 - (BOOL)armAt:(NSDate *)date action:(NSString *)action payType:(NSNumber *)payType error:(NSError **)error {
     if(!NSThread.isMainThread){if(error)*error=WGDError(1,@"请在主线程设置任务");return NO;}
-    NSTimeInterval delta=[date timeIntervalSinceNow];
+    NSTimeInterval validationNow=NSDate.date.timeIntervalSince1970;
+    NSTimeInterval delta=date.timeIntervalSince1970-validationNow;
     if(self.cancellingTask||[@[@"sending",@"unknown"] containsObject:self.task[@"state"]]){if(error)*error=WGDError(3,@"上一笔接口请求仍需核对结果，请勿覆盖");return NO;}
     BOOL cartTask=[action isEqual:@"preheatOnce"];
+    NSDate *localDue=cartTask?(self.cartLocalDue?:date):date;
+    NSTimeInterval localDelta=localDue.timeIntervalSince1970-validationNow;
     NSDecimalNumber *maximum=self.cartMaximum;
     NSString *sampleKey=[(cartTask?WDGCartSnapshotKey():self.snapshot[@"sampleKey"]) copy];
     NSString *reason=nil;
@@ -194,7 +260,8 @@ static NSError *WGDError(NSInteger code, NSString *message) {
         }
     }
     if([action isEqual:@"serviceOnce"] && delta>590)reason=@"接口参数本轮只验证十分钟有效期，请把任务设在十分钟以内";
-    if(cartTask && delta>43200)reason=@"预热任务请设在 12 小时以内";
+    if(cartTask&&(!isfinite(delta)||delta<2||delta>43200||!isfinite(localDelta)||localDelta<2||localDelta>43200))
+        reason=@"公告时刻与本地执行时刻都须在未来 2 秒至 12 小时内，请重新确认时差和时间";
     if(reason){if(error)*error=WGDError(2,reason);return NO;}
     WDGOrderService *prepared=nil;
     if([action isEqual:@"serviceOnce"]){
@@ -204,7 +271,7 @@ static NSError *WGDError(NSInteger code, NSString *message) {
         prepared=[self preparePreheatWithPayType:nil error:error];
         if(!prepared||![prepared.sampleKey isEqual:sampleKey]||
            ![prepared configureConcurrentLanes:self.cartLanes error:error]||
-           ![prepared configureCartDueAt:date maximumTotal:maximum error:error]){
+           ![prepared configureCartDueAt:localDue maximumTotal:maximum error:error]){
             if(prepared&&![prepared.sampleKey isEqual:sampleKey]&&error)*error=WGDError(21,@"准备期间购物车目标已变化，请重新确认");
             return NO;
         }
@@ -212,11 +279,33 @@ static NSError *WGDError(NSInteger code, NSString *message) {
     [self cancelTask:@"新任务替代旧任务"];
     if([@[@"sending",@"unknown"] containsObject:self.task[@"state"]]){if(error)*error=WGDError(3,@"旧任务的创建请求已经发出，请先核对结果");return NO;}
     if((cartTask&&![sampleKey isEqual:WDGCartSnapshotKey()])||([action isEqual:@"serviceOnce"]&&![sampleKey isEqual:self.snapshot[@"sampleKey"]])){if(error)*error=WGDError(21,@"准备期间目标已变化，请重新确认");return NO;}
+    NSTimeInterval armedAt=NSDate.date.timeIntervalSince1970,armedUptime=NSProcessInfo.processInfo.systemUptime;
+    NSTimeInterval dueTS=localDue.timeIntervalSince1970;
+    if(cartTask&&(date.timeIntervalSince1970-armedAt<2||date.timeIntervalSince1970-armedAt>43200||dueTS-armedAt<2||dueTS-armedAt>43200)){
+        if(error)*error=WGDError(2,@"准备后公告时刻或本地执行时刻已超出未来 2 秒至 12 小时，请重新确认");return NO;
+    }
     self.preparedService=prepared;self.lastReceipt=nil;
-    NSTimeInterval fireAt=cartTask?MAX(NSDate.date.timeIntervalSince1970,date.timeIntervalSince1970-5):date.timeIntervalSince1970;
-    self.task=[@{@"id":NSUUID.UUID.UUIDString,@"state":@"armed",@"action":action,@"sampleKey":sampleKey?:@"",@"payType":cartTask?NSNull.null:(payType?:NSNull.null),@"dueAt":@(date.timeIntervalSince1970),@"fireAt":@(fireAt),@"armedAt":@(NSDate.date.timeIntervalSince1970)} mutableCopy];
-    if(cartTask){self.task[@"maximumTotal"]=maximum.stringValue;self.task[@"concurrentLanes"]=@(self.cartLanes);}
-    WDGTaskGateArm(&_taskGate,fireAt);
+    NSTimeInterval fireAt=cartTask?dueTS-5:dueTS;
+    self.task=[@{@"id":NSUUID.UUID.UUIDString,@"state":@"armed",@"action":action,@"sampleKey":sampleKey?:@"",@"payType":cartTask?NSNull.null:(payType?:NSNull.null),@"announcedDueAt":@(date.timeIntervalSince1970),@"dueAt":@(dueTS),@"fireAt":@(fireAt),@"armedAt":@(armedAt),@"armedUptime":@(armedUptime)} mutableCopy];
+    if(cartTask){
+        NSDictionary *clock=self.cartClockSnapshot?:WDGCachedClockStatus(nil);BOOL native=WDGNativeClockMode(clock);
+        self.task[@"warmupAt"]=@(fireAt);
+        self.task[@"maximumTotal"]=maximum.stringValue;self.task[@"concurrentLanes"]=@(self.cartLanes);
+        self.task[@"clockMode"]=native?@"native_recent":@"local";
+        self.task[@"clockOffsetMs"]=native?clock[@"offsetMs"]:@0;
+        self.task[@"clockSource"]=clock[@"source"]?:@"none";
+        self.task[@"clockRawMarker"]=clock[@"updatedAtServerMs"]?:NSNull.null;
+        self.task[@"clockRawOffsetMs"]=clock[@"rawOffsetMs"]?:NSNull.null;
+        self.task[@"clockSampledAt"]=clock[@"sampledAt"]?:@0;
+        self.task[@"clockSampledUptime"]=clock[@"sampledUptime"]?:@0;
+        self.task[@"clockGeneration"]=clock[@"clockGeneration"]?:@0;
+        self.task[@"clockSample"]=clock;self.task[@"clockReason"]=clock[@"reason"]?:@"";
+        self.task[@"serverOffsetMs"]=self.task[@"clockOffsetMs"];self.task[@"serverClockOk"]=@(native);
+        if(!native)self.task[@"reason"]=@"已确认回退：按本地时间运行，不自动应用后续校准样本";
+    }
+    // Inside the last five seconds, start the same one warmup immediately.
+    // Persist the exact T-5 instant; do not add an early Create or a retry.
+    WDGTaskGateArm(&_taskGate,cartTask?MAX(armedAt,fireAt):fireAt);
     self.timer=[NSTimer timerWithTimeInterval:0.1 target:self selector:@selector(tick:) userInfo:nil repeats:YES];
     [[NSRunLoop mainRunLoop] addTimer:self.timer forMode:NSRunLoopCommonModes];
     [self recordEvent:@"task_armed" details:@{@"taskId":self.task[@"id"],@"action":action}];
@@ -237,11 +326,28 @@ static NSError *WGDError(NSInteger code, NSString *message) {
     if(timer!=self.timer){[timer invalidate];return;}
     if(![self.task[@"state"] isEqual:@"armed"]){[timer invalidate];self.timer=nil;return;}
     NSTimeInterval now=NSDate.date.timeIntervalSince1970;
+    BOOL cartTask=[self.task[@"action"] isEqual:@"preheatOnce"];
+    if(cartTask){
+        NSTimeInterval wallElapsed=now-[self.task[@"armedAt"] doubleValue];
+        NSTimeInterval uptimeElapsed=NSProcessInfo.processInfo.systemUptime-[self.task[@"armedUptime"] doubleValue];
+        // Cheap local checks also catch backward jumps before the wall clock
+        // reaches T-5. Native state is read only when the gate actually fires.
+        if(!isfinite(wallElapsed)||!isfinite(uptimeElapsed)||uptimeElapsed<0||fabs(wallElapsed-uptimeElapsed)>0.250){
+            WDGInvalidateServerClock();[self cancelTask:@"系统时间与计时基准偏差超过 250 ms，任务已取消，请重新确认"];return;
+        }
+    }
     WDGTickDecision decision=WDGTaskGateTick(&_taskGate,now,UIApplication.sharedApplication.applicationState==UIApplicationStateActive);
     if(decision==WDGTickWait)return;
     if(decision==WDGTickInactive){[self cancelTask:@"微店离开前台，任务已取消"];return;}
     if(decision==WDGTickExpired){[self cancelTask:@"错过执行时刻超过 2 秒或时间无效，请重新设置"];return;}
     if(decision==WDGTickIdle){[timer invalidate];self.timer=nil;return;}
+    if(cartTask&&[self.task[@"clockMode"] isEqual:@"native_recent"]){
+        NSDictionary *fresh=[WDGReadServerClock() copy];self.serverClock=fresh;
+        NSDate *announced=[NSDate dateWithTimeIntervalSince1970:[self.task[@"announcedDueAt"] doubleValue]];
+        if(!WDGClockOffsetsMatch(self.task[@"clockSample"],fresh)||!WDGLocalDeadlineFromClock(announced,fresh,NULL)){
+            [self cancelTask:@"微店时差已变化或有效样本已失效，任务已停止，请重新确认"];return;
+        }
+    }
     if([self.task[@"action"] isEqual:@"preheatOnce"] && ![self.task[@"sampleKey"] isEqual:WDGCartSnapshotKey()]){[self cancelTask:@"购物车目标、规格或数量已变化"];return;}
     NSTimeInterval late=now-[self.task[@"fireAt"] doubleValue];
     [self.timer invalidate];self.timer=nil;
@@ -332,7 +438,11 @@ static NSError *WGDError(NSInteger code, NSString *message) {
     [self recordEvent:@"interface_timeout" details:@{@"taskId":taskID}];
 }
 - (void)willResign:(NSNotification *)n {[self cancelTask:@"微店已切到后台或锁屏，请重新设置任务"] ;}
-- (void)clockChanged:(NSNotification *)n {[self cancelTask:@"系统时间已变化，请重新设置任务"] ;}
+- (void)clockChanged:(NSNotification *)n {
+    if(!NSThread.isMainThread){dispatch_async(dispatch_get_main_queue(), ^{[self clockChanged:n];});return;}
+    WDGInvalidateServerClock();
+    [self cancelTask:@"系统时间已变化，旧校准样本已失效，请重新确认任务"];
+}
 - (NSString *)exportReport:(NSError **)error {
     NSMutableDictionary *data=[self.status mutableCopy];
     [data removeObjectForKey:@"receipt"]; // Any order numbers stay in UI memory.

@@ -1,11 +1,8 @@
 #import "WDGCore.h"
 #import "WDGCart.h"
 #import "WDGOrderService.h"
-
-// Local declaration lets the UI compile while Core adopts the new selector.
-@interface WDGCore (WDGPanelConcurrentArming)
-- (BOOL)armCartAt:(NSDate *)date maximumTotal:(NSDecimalNumber *)maximumTotal concurrentLanes:(NSUInteger)lanes error:(NSError **)error;
-@end
+#import "WDGClock.h"
+#import <math.h>
 
 @interface WDGPassWindow : UIWindow @end
 @implementation WDGPassWindow
@@ -103,6 +100,7 @@
 - (void)togglePanel {if(self.card&&!self.card.hidden)[self closePanel];else [self openPanel];}
 - (void)openPanel {
     [self ensureWindow];if(!self.window)return;WDGRefreshTradeSnapshot();
+    [WDGCore.shared refreshServerClock];
     for(UIWindow *w in self.window.windowScene.windows)if(w.isKeyWindow&&w!=self.window)self.previousKey=w;
     if(!self.previousKey){id<UIApplicationDelegate> d=UIApplication.sharedApplication.delegate;if([d respondsToSelector:@selector(window)])self.previousKey=d.window;}
     if(!self.card)[self buildCard];
@@ -188,7 +186,7 @@
     UILabel *title=[self label:17 weight:UIFontWeightSemibold];title.text=@"选择开抢时间";title.textAlignment=NSTextAlignmentCenter;
     [cancel.widthAnchor constraintEqualToConstant:48].active=YES;[done.widthAnchor constraintEqualToConstant:48].active=YES;
     UIStackView *header=[[UIStackView alloc] initWithArrangedSubviews:@[cancel,title,done]];header.axis=UILayoutConstraintAxisHorizontal;header.alignment=UIStackViewAlignmentCenter;header.spacing=8;header.translatesAutoresizingMaskIntoConstraints=NO;[sheet.view addSubview:header];
-    UILabel *hint=[self label:12 weight:UIFontWeightRegular];hint.text=@"本地时间 · 精确到整分钟（秒为 00）";hint.textColor=UIColor.secondaryLabelColor;hint.textAlignment=NSTextAlignmentCenter;hint.translatesAutoresizingMaskIntoConstraints=NO;[sheet.view addSubview:hint];
+    UILabel *hint=[self label:12 weight:UIFontWeightRegular];hint.text=[NSString stringWithFormat:@"公告时刻 · %@ · 秒为 00",(self.datePicker.timeZone?:NSTimeZone.localTimeZone).name];hint.textColor=UIColor.secondaryLabelColor;hint.textAlignment=NSTextAlignmentCenter;hint.translatesAutoresizingMaskIntoConstraints=NO;[sheet.view addSubview:hint];
     [self.datePicker removeFromSuperview];self.datePicker.translatesAutoresizingMaskIntoConstraints=NO;[sheet.view addSubview:self.datePicker];
     [NSLayoutConstraint activateConstraints:@[[header.leadingAnchor constraintEqualToAnchor:sheet.view.leadingAnchor constant:20],[header.trailingAnchor constraintEqualToAnchor:sheet.view.trailingAnchor constant:-20],[header.topAnchor constraintEqualToAnchor:sheet.view.safeAreaLayoutGuide.topAnchor constant:18],[header.heightAnchor constraintEqualToConstant:40],[hint.topAnchor constraintEqualToAnchor:header.bottomAnchor constant:6],[hint.leadingAnchor constraintEqualToAnchor:header.leadingAnchor],[hint.trailingAnchor constraintEqualToAnchor:header.trailingAnchor],[self.datePicker.topAnchor constraintEqualToAnchor:hint.bottomAnchor constant:12],[self.datePicker.leadingAnchor constraintEqualToAnchor:sheet.view.leadingAnchor constant:12],[self.datePicker.trailingAnchor constraintEqualToAnchor:sheet.view.trailingAnchor constant:-12],[self.datePicker.heightAnchor constraintEqualToConstant:216]]];
     UISheetPresentationController *presentation=sheet.sheetPresentationController;presentation.detents=@[UISheetPresentationControllerDetent.mediumDetent];presentation.prefersGrabberVisible=YES;presentation.preferredCornerRadius=28.0;sheet.presentationController.delegate=self;
@@ -220,7 +218,7 @@
     self.primaryButton.enabled=!active&&!unknown;self.primaryButton.alpha=self.primaryButton.enabled?1:0.52;
     [self.primaryButton setTitle:active?@"已准备，等待执行":(unknown?@"请先核对订单结果":@"准备抢购") forState:UIControlStateNormal];
     self.cancelButton.hidden=!active;self.datePicker.enabled=!active&&!unknown;self.timeButton.enabled=!active&&!unknown;self.timeButton.alpha=self.timeButton.enabled?1:0.6;self.maximumAmount.enabled=!active&&!unknown;
-    self.versionLabel.text=[NSString stringWithFormat:@"微店助手 %@ · %@",state[@"version"],state[@"build"]];
+    self.versionLabel.text=[NSString stringWithFormat:@"新任务：%@\n微店助手 %@ · %@",[self clockSummary:state[@"clock"]],state[@"version"],state[@"build"]];
 }
 - (void)alert:(NSString *)title message:(NSString *)message {
     UIAlertController *a=[UIAlertController alertControllerWithTitle:title message:message preferredStyle:UIAlertControllerStyleAlert];[a addAction:[UIAlertAction actionWithTitle:@"知道了" style:UIAlertActionStyleDefault handler:nil]];[self.window.rootViewController presentViewController:a animated:YES completion:nil];
@@ -248,31 +246,63 @@
 - (NSString *)formattedAmount:(NSDecimalNumber *)amount {
     NSNumberFormatter *formatter=[NSNumberFormatter new];formatter.locale=[[NSLocale alloc] initWithLocaleIdentifier:@"zh_CN"];formatter.numberStyle=NSNumberFormatterDecimalStyle;formatter.usesGroupingSeparator=NO;formatter.minimumFractionDigits=2;formatter.maximumFractionDigits=2;return [formatter stringFromNumber:amount]?:amount.stringValue;
 }
+- (NSString *)clockSummary:(NSDictionary *)clock {
+    if([clock[@"valid"] boolValue]&&[clock[@"status"] isEqual:@"native_recent"]&&[clock[@"offsetMs"] isKindOfClass:NSNumber.class])
+        return [NSString stringWithFormat:@"微店时钟 %+.0f ms",[clock[@"offsetMs"] doubleValue]];
+    return @"本地时间 · 尚无有效校准样本";
+}
+- (NSDate *)localDeadlineForDate:(NSDate *)date clockSnapshot:(NSDictionary **)snapshot {
+    [WDGCore.shared refreshServerClock];
+    NSDictionary *clock=[WDGCore.shared.status[@"clock"] copy];NSString *reason=nil;
+    NSDate *local=WDGLocalDeadlineFromClock(date,clock,&reason);
+    if(!local){
+        local=date;NSMutableDictionary *fallback=[clock mutableCopy];
+        fallback[@"valid"]=@NO;fallback[@"offsetMs"]=NSNull.null;
+        fallback[@"reason"]=[clock[@"valid"] boolValue]?(reason?:@"读取样本已失效"):(clock[@"reason"]?:reason?:@"尚无有效校准样本");clock=[fallback copy];
+    }
+    if(snapshot)*snapshot=clock;
+    NSTimeInterval now=NSDate.date.timeIntervalSince1970,announcedDelta=date.timeIntervalSince1970-now,localDelta=local.timeIntervalSince1970-now;
+    if(!date||!isfinite(announcedDelta)||announcedDelta<2||announcedDelta>43200||!isfinite(localDelta)||localDelta<2||localDelta>43200){
+        [self alert:@"请重新选择开抢时间" message:@"公告时刻与本地执行时刻都须在未来 2 秒至 12 小时内；时差校正后也按此范围校验。 "];return nil;
+    }
+    return local;
+}
+- (NSString *)clockReview:(NSDictionary *)clock announced:(NSDate *)date localDue:(NSDate *)localDue {
+    NSTimeZone *zone=self.datePicker.timeZone?:NSTimeZone.localTimeZone;
+    NSDateFormatter *df=[NSDateFormatter new];df.locale=[[NSLocale alloc] initWithLocaleIdentifier:@"zh_CN"];df.timeZone=zone;df.dateFormat=@"yyyy-MM-dd HH:mm:ss.SSS ZZZZ";
+    BOOL native=[clock[@"valid"] boolValue]&&[clock[@"status"] isEqual:@"native_recent"];
+    NSString *mode=native?@"按微店时钟校正一次":@"回退：明确按本地时间运行（不应用新样本）";
+    return [NSString stringWithFormat:@"公告时刻：%@\n时区：%@\n本地%@时刻：%@\n%@\n%@\n来源：%@ · %@\n%@\n只读 App 已有样本，未网络测 RTT；偏差不是精度保证。",
+        [df stringFromDate:date],zone.name,native?@"校正":@"执行",[df stringFromDate:localDue],mode,[self clockSummary:clock],clock[@"source"]?:@"none",clock[@"status"]?:@"unavailable",clock[@"reason"]?:@""];
+}
+- (void)readServerClock {
+    [WDGCore.shared refreshServerClock];NSDictionary *clock=WDGCore.shared.status[@"clock"];
+    [self alert:[self clockSummary:clock] message:[NSString stringWithFormat:@"来源：%@ · %@\n%@\n\n只读取微店自然更新的原生样本，不发起网络校准、不测 RTT、不修改系统时钟。读取快照有效期 5 秒；原生缓存按更新状态判定，显示的是偏差，不承诺绝对毫秒精度。仅影响下一笔任务，已设置时刻保持不变；确认与执行前会重新核对。",clock[@"source"]?:@"none",clock[@"status"]?:@"unavailable",clock[@"reason"]?:@""]];
+}
 - (void)validateCartParameters {
     NSDecimalNumber *maximum=[self maximumValue];if(!maximum)return;
-    NSDate *date=[self selectedMinute];if(date.timeIntervalSinceNow<2||date.timeIntervalSinceNow>43200){[self alert:@"请选择未来的开抢时间" message:@"范围为十二小时内，本次只做本地校验。 "];return;}
+    NSDate *date=[self selectedMinute];NSDictionary *clock=nil;NSDate *localDue=[self localDeadlineForDate:date clockSnapshot:&clock];if(!localDue)return;
     NSString *key=[WDGCartSnapshotKey() copy];if(!key.length){[self alert:@"先选好商品" message:@"刷新购物车或点商品卡选择目标。 "];return;}
     NSError *error=nil;id request=WDGCartBuildRequest(&error);
     WDGOrderService *s=request?[WDGOrderService preparePreheatRequest:request sampleKey:key payType:nil error:&error]:nil;
     if(![key isEqual:WDGCartSnapshotKey()]){[self alert:@"目标已变化" message:@"请重新选择后校验。 "];return;}
-    if(!s||![s configureCartDueAt:date maximumTotal:maximum error:&error]){[self alert:@"本地校验未通过" message:error.localizedDescription?:@"请核对商品和规格。 "];return;}
-    [self endEditing];[self alert:@"本地参数校验成功" message:@"商品请求、原生服务与金额参数已就绪。\n未联网，未设置任务，未调用确认或创建订单接口。最终地址、运费及实付仍由服务端确认。 "];
+    if(!s||![s configureConcurrentLanes:self.concurrentLanes==2?2:1 error:&error]||![s configureCartDueAt:localDue maximumTotal:maximum error:&error]){[self alert:@"本地校验未通过" message:error.localizedDescription?:@"请核对商品和规格。 "];return;}
+    [self endEditing];[self alert:@"本地参数校验成功" message:[NSString stringWithFormat:@"%@\n\n商品请求、原生服务与金额参数已就绪。未联网，未设置任务，未调用确认或创建订单接口。最终地址、运费及实付仍由服务端确认。",[self clockReview:clock announced:date localDue:localDue]]];
 }
 - (void)schedule {
     NSDecimalNumber *maximum=[self maximumValue];if(!maximum)return;[self endEditing];
     NSArray *items=[[NSArray alloc] initWithArray:WDGCartSelectedLines() copyItems:YES];NSString *key=[WDGCartSnapshotKey() copy];NSArray *keys=[[items valueForKey:@"lineKey"] sortedArrayUsingSelector:@selector(compare:)];
     if(!items.count||!key.length){[self alert:@"先选好商品" message:@"刷新购物车或点商品卡选择目标。 "];return;}
-    NSDate *date=[self selectedMinute];if(date.timeIntervalSinceNow<2||date.timeIntervalSinceNow>43200){[self alert:@"请选择未来的开抢时间" message:@"设置在十二小时以内，精确到整分钟。 "];return;}
+    NSDate *date=[self selectedMinute];NSDictionary *clock=nil;NSDate *localDue=[self localDeadlineForDate:date clockSnapshot:&clock];if(!localDue)return;
     NSUInteger lanes=self.concurrentLanes==2?2:1;
     NSDecimalNumber *total=[maximum decimalNumberByMultiplyingBy:[NSDecimalNumber decimalNumberWithMantissa:lanes exponent:0 isNegative:NO]];
-    NSDateFormatter *df=[NSDateFormatter new];df.dateFormat=@"yyyy-MM-dd HH:mm:ss ZZZZ";df.timeZone=self.datePicker.timeZone?:NSTimeZone.localTimeZone;
     NSMutableString *message=[NSMutableString string];for(NSDictionary *item in items)[message appendFormat:@"%@\n%@ × %@\n\n",item[@"title"]?:@"商品",item[@"skuTitle"]?:@"未选规格",item[@"quantity"]?:@"?"];
-    [message appendFormat:@"时间：%@\n每单最高实付（含运费）：¥%@\n支付：采用微店确认结果的已选方式\n\n",[df stringFromDate:date],[self formattedAmount:maximum]];
+    [message appendFormat:@"%@\n\n每单最高实付（含运费）：¥%@\n支付：采用微店确认结果的已选方式\n\n",[self clockReview:clock announced:date localDue:localDue],[self formattedAmount:maximum]];
     if(lanes==2)[message appendFormat:@"双路竞速：同商品最多2单\n最高总扣款上限：¥%@（每单上限 × 2）\n\n到点发出 2 路真实下单请求，可能重复下单。已发出的请求可能各自成功，首个成功不会撤销另一已发请求。请保持微店前台。",[self formattedAmount:total]];
     else [message appendFormat:@"单路：最多 1 单\n最高总扣款上限：¥%@\n\n到点将直接创建一次真实订单，不打开支付链接。请保持微店前台。",[self formattedAmount:total]];
     UIAlertController *a=[UIAlertController alertControllerWithTitle:lanes==2?@"确认双路竞速任务":@"确认这笔任务" message:message preferredStyle:UIAlertControllerStyleAlert];
     [a addAction:[UIAlertAction actionWithTitle:@"再看看" style:UIAlertActionStyleCancel handler:nil]];
-    [a addAction:[UIAlertAction actionWithTitle:lanes==2?@"确认双路 · 接受最多2单":@"确认单路 · 最多1单" style:UIAlertActionStyleDestructive handler:^(__unused UIAlertAction *v){NSArray *nowKeys=[[WDGCartSelectedLines() valueForKey:@"lineKey"] sortedArrayUsingSelector:@selector(compare:)];if(![key isEqual:WDGCartSnapshotKey()]||![keys isEqual:nowKeys]){[self alert:@"购物车目标已变化" message:@"请重新核对商品和规格。 "];return;}NSError *error=nil;if(![WDGCore.shared armCartAt:date maximumTotal:maximum concurrentLanes:lanes error:&error])[self alert:@"任务未设置" message:error.localizedDescription];}]];
+    [a addAction:[UIAlertAction actionWithTitle:lanes==2?@"确认双路 · 接受最多2单":@"确认单路 · 最多1单" style:UIAlertActionStyleDestructive handler:^(__unused UIAlertAction *v){NSArray *nowKeys=[[WDGCartSelectedLines() valueForKey:@"lineKey"] sortedArrayUsingSelector:@selector(compare:)];if(![key isEqual:WDGCartSnapshotKey()]||![keys isEqual:nowKeys]){[self alert:@"购物车目标已变化" message:@"请重新核对商品和规格。 "];return;}NSError *error=nil;if(![WDGCore.shared armCartAt:date maximumTotal:maximum concurrentLanes:lanes clockSnapshot:clock error:&error])[self alert:@"任务未设置" message:error.localizedDescription];}]];
     [self.window.rootViewController presentViewController:a animated:YES completion:nil];
 }
 - (void)cancel {[WDGCore.shared cancelTask:@"用户取消任务"];}
@@ -290,6 +320,7 @@
 - (void)showMore {
     [self endEditing];UIAlertController *a=[UIAlertController alertControllerWithTitle:@"更多" message:nil preferredStyle:UIAlertControllerStyleActionSheet];
     UIAlertAction *lanes=[UIAlertAction actionWithTitle:self.concurrentLanes==2?@"并发：双路竞速":@"并发：单路" style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *v){[self chooseConcurrentLanes];}];lanes.enabled=self.primaryButton.enabled;[a addAction:lanes];
+    [a addAction:[UIAlertAction actionWithTitle:@"读取微店时钟" style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *v){[self readServerClock];}]];
     [a addAction:[UIAlertAction actionWithTitle:@"校验参数（不联网）" style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *v){[self validateCartParameters];}]];
     [a addAction:[UIAlertAction actionWithTitle:@"5 秒本地演练" style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *v){[self localTest];}]];
     [a addAction:[UIAlertAction actionWithTitle:@"导出诊断" style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *v){[self export];}]];

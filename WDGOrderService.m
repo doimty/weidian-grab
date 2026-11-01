@@ -137,6 +137,9 @@ static NSDictionary *WDGSReceipt(BOOL success,id response,id error) {
     ((void(*)(id,SEL,NSUInteger))objc_msgSend)(request,setter,self.payType.unsignedIntegerValue);
     void (^reply)(BOOL,id,id)=^(BOOL success,id result,id nativeError){
         dispatch_async(dispatch_get_main_queue(),^{
+            // Thor payload is serialized later than the Service call, so the
+            // temporary payButtonType must survive until this reply arrives.
+            ((void(*)(id,SEL,NSUInteger))objc_msgSend)(request,setter,saved);
             if(!WDGServiceResolve(&self->_state,self->_generation,success))return;
             ++WDGServiceReplies;
             NSDictionary *receipt=WDGSReceipt(success,result,nativeError);
@@ -148,10 +151,9 @@ static NSDictionary *WDGSReceipt(BOOL success,id response,id error) {
         ++WDGServiceCalls;
         ((void(*)(id,SEL,id,id,id))objc_msgSend)(NSClassFromString(@"VDTradeConfOrderService"),NSSelectorFromString(WDGCreateSelector),request,confirmation,[reply copy]);
     } @catch(__unused NSException *exception) {
+        ((void(*)(id,SEL,NSUInteger))objc_msgSend)(request,setter,saved);
         WDGServiceTimeout(&_state,_generation);
         completion(@{@"state":@"unknown",@"apiSucceeded":@NO,@"message":@"Service 调用异常，结果待核对；未自动重试",@"paymentInvoked":@NO});
-    } @finally {
-        ((void(*)(id,SEL,NSUInteger))objc_msgSend)(request,setter,saved);
     }
     return YES; // Invocation only: Core waits for our own network result block.
 }

@@ -93,6 +93,7 @@ static NSDictionary *WDGSReceipt(BOOL success,id response,id error) {
 @property(nonatomic,copy) NSString *taskID;
 @property(nonatomic) NSTimeInterval preparedUptime;
 @property(nonatomic) BOOL preheatMode;
+@property(nonatomic,strong) id preConfirmationModel;
 @end
 @implementation WDGOrderService {
     WDGServiceState _state;
@@ -218,6 +219,7 @@ static NSDictionary *WDGSReceipt(BOOL success,id response,id error) {
             // yy_modelWithDictionary:, so we try that first, then JSON.
             Class confirmClass=NSClassFromString(@"VDTradeConfirmOrderDO");
             id model=nil;
+            id preModel=nil;
             if([result isKindOfClass:NSDictionary.class]&&confirmClass){
                 for(NSString *selName in @[@"yy_modelWithDictionary:",@"yy_modelWithJSON:"]){
                     SEL conv=NSSelectorFromString(selName);
@@ -226,6 +228,14 @@ static NSDictionary *WDGSReceipt(BOOL success,id response,id error) {
                     @try{model=((id(*)(id,SEL,id))objc_msgSend)(confirmClass,conv,result);}@catch(__unused NSException *e){model=nil;}
                     if([model isKindOfClass:confirmClass])break;
                     model=nil;
+                }
+                // The App's own caller converts the same payload twice, filling
+                // both _confirmOrderDO and _preConfirmOrderDO. Rebuild both so
+                // the request matches what a real confirmation would carry.
+                if([model isKindOfClass:confirmClass]){
+                    @try{preModel=((id(*)(id,SEL,id))objc_msgSend)(confirmClass,NSSelectorFromString(@"yy_modelWithDictionary:"),result);}
+                    @catch(__unused NSException *e){preModel=nil;}
+                    if(![preModel isKindOfClass:confirmClass])preModel=nil;
                 }
             }
             if(!model||![model isKindOfClass:confirmClass]){
@@ -237,6 +247,7 @@ static NSDictionary *WDGSReceipt(BOOL success,id response,id error) {
             if(submitStarted){return;}
             submitStarted=YES;
             strongSelf.confirmationModel=model;
+            strongSelf.preConfirmationModel=preModel;
             void (^createReply)(BOOL,id,id)=^(BOOL cok,id cresult,id cerror){
                 dispatch_async(dispatch_get_main_queue(),^{
                     if(!WDGServiceResolve(&strongSelf->_state,strongSelf->_generation,cok))return;

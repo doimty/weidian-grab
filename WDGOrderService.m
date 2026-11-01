@@ -332,7 +332,12 @@ static NSDictionary *WGSReceipt(BOOL success,id response,id error) {
     NSNumber *blocked=WGSBool(model,@"cannot_submit");if(!blocked || blocked.boolValue)return @"当前确认数据禁止提交";
     if ([WGSBool(model,@"need_add_address") boolValue]) return @"微店要求补充收件信息，本次停止";
     if (WGSGet(model,@"confSlideDO") && ![WGSBool(model,@"slideChecked") boolValue]) return @"微店要求完成页面验证，本次停止";
-    if (WGSArray(model,@"agreement_info_list").count && ![WGSBool(model,@"isAgreementChecked") boolValue]) return @"新增协议尚未确认，本次停止";
+    // Native createOrderHelp: gates on getRealAgreementInfos, not the raw
+    // agreement_info_list. Display-only entries may be filtered out. Never
+    // set isAgreementChecked here: the native confirmation belongs to the user.
+    NSArray *agreements=WGSArray(model,@"getRealAgreementInfos");
+    if (!agreements) return @"交易协议状态尚未识别，请在微店确认页核对";
+    if (agreements.count && ![WGSBool(model,@"isAgreementChecked") boolValue]) return @"此订单有交易协议待确认，请在微店确认页查看";
     NSDecimalNumber *price=WGSAmount(WGSString(model,@"total_pay_price"));
     if (!price) return @"确认金额格式未知，未创建订单";
     if (self.preheatMode && [price compare:self.maximumTotal]==NSOrderedDescending) return @"确认金额超过设置的最高实付金额，未创建订单";

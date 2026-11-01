@@ -254,10 +254,18 @@ typedef void (^NativeReply)(BOOL, id, id);
 @property(nonatomic, copy) NSString *total_pay_price;
 @property(nonatomic, copy) NSArray<VDTradeConfirmOrderShopDO *> *shop_list;
 @property(nonatomic, copy) NSArray<VDTradeConfirmOrderPayOptionDO *> *pay_options;
+@property(nonatomic, copy) NSArray *agreement_info_list;
+@property(nonatomic, copy) NSArray *fixture_real_agreements;
+@property(nonatomic) bool fixture_checkbox;
+@property(nonatomic) bool isAgreementChecked;
+- (NSArray *)getRealAgreementInfos;
+- (bool)shouldShowAgreementInCheckbox;
 + (instancetype)yy_modelWithDictionary:(NSDictionary *)dictionary;
 - (NSDictionary *)yy_modelToJSONObject;
 @end
 @implementation VDTradeConfirmOrderDO
+- (NSArray *)getRealAgreementInfos {return self.fixture_real_agreements ?: @[];}
+- (bool)shouldShowAgreementInCheckbox {return self.fixture_checkbox;}
 + (instancetype)yy_modelWithDictionary:(NSDictionary *)dictionary {
     ++ModelConversions;
     if (![dictionary isKindOfClass:NSDictionary.class]) return nil;
@@ -265,6 +273,10 @@ typedef void (^NativeReply)(BOOL, id, id);
     model.cannot_submit = [dictionary[@"cannot_submit"] boolValue];
     model.need_add_address = [dictionary[@"need_add_address"] boolValue];
     model.total_pay_price = dictionary[@"total_pay_price"];
+    model.agreement_info_list = dictionary[@"agreement_info_list"] ?: @[];
+    model.fixture_real_agreements = dictionary[@"fixture_real_agreements"] ?: model.agreement_info_list;
+    model.fixture_checkbox = [dictionary[@"fixture_checkbox"] boolValue];
+    model.isAgreementChecked = [dictionary[@"isAgreementChecked"] boolValue];
     NSMutableArray *shops = [NSMutableArray array];
     for (NSDictionary *shopJSON in dictionary[@"shop_list"] ?: @[]) {
         VDTradeConfirmOrderShopDO *shop = [VDTradeConfirmOrderShopDO new];
@@ -310,7 +322,11 @@ typedef void (^NativeReply)(BOOL, id, id);
     return @{@"cannot_submit": @(self.cannot_submit),
              @"need_add_address": @(self.need_add_address),
              @"total_pay_price": self.total_pay_price ?: @"",
-             @"shop_list": shops, @"pay_options": options};
+             @"shop_list": shops, @"pay_options": options,
+             @"agreement_info_list": self.agreement_info_list ?: @[],
+             @"fixture_real_agreements": self.fixture_real_agreements ?: @[],
+             @"fixture_checkbox": @(self.fixture_checkbox),
+             @"isAgreementChecked": @(self.isAgreementChecked)};
 }
 @end
 
@@ -1214,6 +1230,27 @@ static void FixtureServiceCases(void) {
             FixtureStart(run);
             FixtureRequireState(run, @"failed");
             REQUIRE(CreateCalls == 0, @"invalid confirmation created an order");
+        });
+    }
+    for (NSString *scenario in @[@"display-only", @"required-unchecked", @"required-checked", @"checkbox-hidden-still-required", @"unknown-filter-abi"]) {
+        FixtureCase([@"service native agreement gate " stringByAppendingString:scenario], ^{
+            VDTradeConfirmOrderRequestDO *request = FixtureRequest();
+            NSMutableDictionary *json = [FixtureConfirmation(request) mutableCopy];
+            json[@"agreement_info_list"] = @[@{@"agreement_name": @"Fixture terms"}];
+            json[@"fixture_real_agreements"] = [scenario isEqual:@"display-only"] ? @[] : json[@"agreement_info_list"];
+            json[@"fixture_checkbox"] = @(![scenario isEqual:@"checkbox-hidden-still-required"]);
+            json[@"isAgreementChecked"] = @([scenario isEqual:@"required-checked"]);
+            if ([scenario isEqual:@"unknown-filter-abi"]) {
+                ConfirmationSubclass = FixtureSubclass(VDTradeConfirmOrderDO.class, @"BadAgreementFilter",
+                    @selector(getRealAgreementInfos), (IMP)FixtureWrongDoubleGetter, "d@:");
+            }
+            FixtureScript(@[[WDGFixtureStep success:json]]);
+            WDGFixtureRun *run = FixturePrepare(request, nil, 0.08);
+            FixtureStart(run);
+            BOOL allowed = [scenario isEqual:@"display-only"] || [scenario isEqual:@"required-checked"];
+            FixtureRequireState(run, allowed ? @"apiSucceeded" : @"failed");
+            REQUIRE(CreateCalls == (allowed ? 1 : 0), @"native filtered agreement gate mismatch");
+            REQUIRE(WrongGetterCalls == 0, @"unverified agreement filter ABI was called");
         });
     }
     FixtureCase(@"service explicit payment type unavailable in buttons is rejected", ^{

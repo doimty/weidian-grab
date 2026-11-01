@@ -291,8 +291,20 @@ static id WGSCloneConfirmation(id model) {
     }
     self.dueAt=due;self.maximumTotal=maximum;return YES;
 }
+- (void)fillAggregateCounters:(NSMutableDictionary *)receipt {
+    NSUInteger pending=0,successes=0,total=self.lanes.count;
+    for (WDGServiceLane *lane in self.lanes) {if(!lane.settled)++pending;else if(lane.success)++successes;}
+    if (!receipt[@"apiSucceeded"]) receipt[@"apiSucceeded"]=@NO;
+    if (!receipt[@"paymentInvoked"]) receipt[@"paymentInvoked"]=@NO;
+    receipt[@"concurrentLanes"]=@(total?total:self.concurrentLanes);
+    receipt[@"successCallbacks"]=@(successes);
+    receipt[@"completedRequests"]=@(total-pending);
+    receipt[@"pendingRequests"]=@(pending);
+}
 - (void)progress:(NSString *)state message:(NSString *)message {
-    if (self.reply) self.reply(@{@"terminal":@NO,@"state":state,@"message":message,@"paymentInvoked":@NO});
+    if (!self.reply) return;
+    NSMutableDictionary *r=[@{@"terminal":@NO,@"state":state,@"message":message} mutableCopy];
+    [self fillAggregateCounters:r];self.reply([r copy]);
 }
 - (void)restorePayment {
     if (self.payTypeBound && self.requestModel) {
@@ -311,7 +323,9 @@ static id WGSCloneConfirmation(id model) {
     [self releaseModels];WDGOrderReply callback=self.reply;self.reply=nil;if(callback)callback(receipt);
 }
 - (void)stop:(NSString *)message state:(NSString *)state {
-    [self finish:@{@"terminal":@YES,@"state":state,@"apiSucceeded":@NO,@"paymentInvoked":@NO,@"message":message}];
+    NSMutableDictionary *r=[@{@"terminal":@YES,@"state":state,@"apiSucceeded":@NO,@"paymentInvoked":@NO,@"message":message} mutableCopy];
+    [self fillAggregateCounters:r];
+    [self finish:[r copy]];
 }
 - (BOOL)submitTask:(NSString *)taskID completion:(WDGOrderReply)completion error:(NSError **)error {
     NSString *reason=nil;

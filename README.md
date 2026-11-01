@@ -1,13 +1,25 @@
-# WeidianGrab 0.8.2
+# WeidianGrab 0.9.0
 
 微店买家版 7.9.62 / iOS15+ / RootHide。悬浮面板用于选择购物车目标、设定时间和最高实付金额；执行路径直接调用 App 原生网络 Service，不模拟点击，不调用订单页的提交按钮方法。
 
 ## 使用
 
-1. 打开购物车刷新数据。任务卡自动带入已勾选的商品；点商品卡也可指定目标，不自动全选。
-2. 主界面只有商品、开抢时间、最高实付金额（含运费）和一个“准备抢购”按钮。
-3. 核对确认框后才设置任务。右上角“···”收纳本地参数校验、五秒演练和诊断导出。
+1. 打开购物车刷新数据。任务卡自动带入已勾选的商品，并实时跟随你在微店里的勾选、取消、数量与规格变化；点商品卡也可手动指定某个条目。
+2. 主界面只有商品、开抢时间、最高实付金额（含运费）和一个“准备抢购”按钮。时间与金额直接在主卡点开修改。
+3. 核对确认框后才设置任务。右上角“···”收纳本地参数校验、五秒演练、诊断导出，以及“并发：单路/双路竞速”。
 4. 到点前保持微店在前台。悬浮卡可收起，执行不依赖订单确认页。
+
+## 并发竞速
+
+默认单路，与实测下单成功的 0.8.2 行为一致。选择双路后，插件会在设定时刻为同一购物车模板发出 **两个独立的 CreateOrder 请求**：
+
+- 两路各自持有独立的请求与确认模型副本，支付参数互不覆盖。
+- 第一路返回成功 **不会** 撤销第二路已发出的请求；插件继续等待并汇总两路的真实结果。
+- 因此**可能生成两笔订单**，最高扣款风险约为设置金额上限的两倍；确认框会按所选路数显示“最多 2 单”与总额上限。
+- 服务端是否对重复提交去重**尚未验证**；插件不宣称能避免重复订单。
+
+回执字段：`concurrentLanes`、`successCallbacks`、`completedRequests`、`pendingRequests`。只有全部路数返回且至少一路成功才报 `apiSucceeded`；仍有在途请求时为 `unknown`，不重试。
+
 
 最多提前十二小时设置，原始商品 ID、地址等参数只在当前进程内存。App 重启不自动恢复交易任务。数据/时间改变后需重新确认。
 
@@ -53,8 +65,8 @@ clang -fobjc-arc -fblocks -Wall -Wextra -Werror -Wno-unused-parameter \
   -o /tmp/cart-preheat-mock
 /tmp/cart-preheat-mock
 make clean && make package THEOS_PACKAGE_SCHEME=roothide FINALPACKAGE=1
-python3 scripts/validate_deb.py packages/com.koudai.weidian.grab_0.8.2_iphoneos-arm64e.deb \
-  --version 0.8.2 --expected-sdk 16.4 --output manifest.json
+python3 scripts/validate_deb.py packages/com.koudai.weidian.grab_0.9.0_iphoneos-arm64e.deb \
+  --version 0.9.0 --expected-sdk 16.4 --output manifest.json
 ```
 
 固定 roothide/theos `88506b2c22e9e07dd4ed055f23c9e398a117a2c7`、arm64+arm64e、最低 iOS15。SDK归档名16.5，元数据实际16.4。CI先执行模拟/门控测试，再出精确包并核验依赖、filter、脚本与哈希；完整日志随产物保存。

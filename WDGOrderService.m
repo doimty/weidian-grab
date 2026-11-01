@@ -63,13 +63,6 @@ static NSNumber *WGSUnsigned(id object,NSString *name) {
     @try { return @(((NSUInteger(*)(id,SEL))objc_msgSend)(object,sel)); }
     @catch (__unused NSException *e) { return nil; }
 }
-static NSNumber *WGSSigned(id object,NSString *name) {
-    if (!object) return nil;
-    SEL sel=NSSelectorFromString(name);
-    if (!WGSTyped(class_getInstanceMethod(object_getClass(object),sel),2,'q')) return nil;
-    @try { return @(((long long(*)(id,SEL))objc_msgSend)(object,sel)); }
-    @catch (__unused NSException *e) { return nil; }
-}
 static NSArray *WGSArray(id object,NSString *name) {
     id value=WGSGet(object,name);
     return [value isKindOfClass:NSArray.class] && [value count]<=200?value:nil;
@@ -143,28 +136,76 @@ static id WGSConvertConfirmation(NSDictionary *json) {
     }
     return nil;
 }
-static NSDictionary *WGSReceipt(BOOL success,id response,id error) {
-    NSMutableDictionary *r=[@{@"terminal":@YES,@"apiSucceeded":@(success && !error),@"paymentInvoked":@NO} mutableCopy];
-    if (!success || error) {
-        BOOL network=[WGSGet(error,@"originError") isKindOfClass:NSError.class];
-        r[@"state"]=network?@"unknown":@"failed";
-        r[@"message"]=network?@"网络返回错误，订单结果待核对；未自动重试":@"创建接口返回错误；未自动重试";
-        NSNumber *code=WGSSigned(error,@"code"),*server=WGSSigned(error,@"serverCode");
-        if (code) r[@"errorCode"]=code;if (server) r[@"serverCode"]=server;
-        return r;
-    }
-    if (![response isKindOfClass:NSDictionary.class]) {
-        r[@"state"]=@"unknown";r[@"message"]=@"接口回调成功，但响应结构未知；请核对订单，不重试";return r;
-    }
-    NSMutableArray *keys=[NSMutableArray array];
-    for (NSString *key in @[@"url",@"friends_pay_url",@"success_url"]) {
-        id value=response[key];if ([value isKindOfClass:NSString.class] && [value length]) [keys addObject:key];
-    }
-    r[@"recognizedFields"]=keys;r[@"state"]=@"apiSucceeded";
-    r[@"message"]=@"创建接口返回成功；未打开支付链接，订单状态请以微店为准";
-    return r;
+static BOOL WGSSetObject(id object,NSString *name,id value) {
+    SEL sel=NSSelectorFromString(name);Method m=class_getInstanceMethod(object_getClass(object),sel);
+    char a[256]={0};if (m) method_getArgumentType(m,2,a,sizeof(a));
+    if (!WGSTyped(m,3,'v') || !WGSObject(a)) return NO;
+    ((void(*)(id,SEL,id))objc_msgSend)(object,sel,value);return YES;
 }
-
+static BOOL WGSSetUnsigned(id object,NSString *name,NSUInteger value) {
+    SEL sel=NSSelectorFromString(name);Method m=class_getInstanceMethod(object_getClass(object),sel);
+    if (!WGSTyped(m,3,'v') || !WGSArg(m,2,'Q')) return NO;
+    ((void(*)(id,SEL,NSUInteger))objc_msgSend)(object,sel,value);return YES;
+}
+static BOOL WGSSetBool(id object,NSString *name,BOOL value) {
+    SEL sel=NSSelectorFromString(name);Method m=class_getInstanceMethod(object_getClass(object),sel);
+    if (!WGSTyped(m,3,'v') || (!WGSArg(m,2,'B') && !WGSArg(m,2,'c'))) return NO;
+    ((void(*)(id,SEL,BOOL))objc_msgSend)(object,sel,value);return YES;
+}
+// Each racing lane gets its own typed request model. Never share one mutable
+// request across two in-flight native calls: the Service binds payButtonType on
+// it and the Thor payload is serialized later.
+static id WGSCloneRequest(id request) {
+    Class rc=NSClassFromString(@"VDTradeConfirmOrderRequestDO");
+    Class ic=NSClassFromString(@"VDTradeConfOrderRequestItemDO");
+    if (!rc || !ic || ![request isKindOfClass:rc]) return nil;
+    id copy=nil;
+    id json=WGSGet(request,@"yy_modelToJSONObject");
+    if ([json isKindOfClass:NSDictionary.class]) {
+        NSMutableDictionary *scalar=[json mutableCopy];[scalar removeObjectForKey:@"items"];
+        for (NSString *name in @[@"yy_modelWithDictionary:",@"yy_modelWithJSON:"]) {
+            SEL sel=NSSelectorFromString(name);Method m=class_getClassMethod(rc,sel);
+            if (!WGSTyped(m,3,'@') || !WGSArg(m,2,'@')) continue;
+            @try { id o=((id(*)(id,SEL,id))objc_msgSend)(rc,sel,scalar);if ([o isKindOfClass:rc]) {copy=o;break;} }
+            @catch (__unused NSException *e) { }
+        }
+    }
+    if (!copy) copy=[[rc alloc] init];
+    NSArray *source=WGSArray(request,@"items");
+    NSMutableArray *typed=[NSMutableArray array];
+    NSDictionary *setters=@{@"price_type":@"setPrice_type:",@"extend":@"setExtend:",
+                            @"installment_id":@"setInstallment_id:",@"activity_id":@"setActivity_id:",
+                            @"biz_key":@"setBiz_key:",@"item_type":@"setItem_type:"};
+    for (id src in source) {
+        NSString *iid=WGSString(src,@"item_id"),*qty=WGSString(src,@"quantity");
+        if (!iid.length || !WGSQuantity(qty)) return nil;
+        id item=[[ic alloc] init];
+        if (!WGSSetObject(item,@"setItem_id:",iid)) return nil;
+        if (!WGSSetObject(item,@"setItem_sku_id:",WGSString(src,@"item_sku_id")?:@"")) return nil;
+        if (!WGSSetObject(item,@"setQuantity:",qty)) return nil;
+        for (NSString *field in setters) {
+            NSString *value=WGSString(src,field);
+            if (value.length && !WGSSetObject(item,setters[field],value)) return nil;
+        }
+        NSNumber *instalment=WGSBool(src,@"use_installment");
+        if (instalment && !WGSSetBool(item,@"setUse_installment:",instalment.boolValue)) return nil;
+        [typed addObject:item];
+    }
+    if (!typed.count || !WGSSetObject(copy,@"setItems:",typed)) return nil;
+    return copy;
+}
+static id WGSCloneConfirmation(id model) {
+    id json=WGSGet(model,@"yy_modelToJSONObject");
+    return [json isKindOfClass:NSDictionary.class]?WGSConvertConfirmation(json):nil;
+}
+@interface WDGServiceLane : NSObject
+@property(nonatomic,strong) id request;
+@property(nonatomic,strong) id confirmation;
+@property(nonatomic) BOOL settled;
+@property(nonatomic) BOOL success;
+@end
+@implementation WDGServiceLane
+@end
 @interface WDGOrderService ()
 @property(nonatomic,strong) id requestModel;
 @property(nonatomic,strong) id confirmationModel;
@@ -188,6 +229,9 @@ static NSDictionary *WGSReceipt(BOOL success,id response,id error) {
 @property(nonatomic) NSUInteger confirmAttempts;
 @property(nonatomic) NSUInteger savedPayType;
 @property(nonatomic) BOOL payTypeBound;
+@property(nonatomic) NSUInteger concurrentLanes;
+@property(nonatomic,strong) NSMutableArray<WDGServiceLane *> *lanes;
+@property(nonatomic) BOOL aggregateTimedOut;
 - (void)beginConfirm;
 - (void)beginCreate;
 - (void)scheduleDue;
@@ -196,6 +240,15 @@ static NSDictionary *WGSReceipt(BOOL success,id response,id error) {
 @implementation WDGOrderService {
     WDGServiceState _state;
     uint64_t _generation;
+}
+- (instancetype)init {
+    if ((self=[super init])) _concurrentLanes=1;
+    return self;
+}
+- (BOOL)configureConcurrentLanes:(NSUInteger)lanes error:(NSError **)error {
+    if (self.active || self.finished || self.taskID.length) {if(error)*error=WGSError(12,@"任务已开始，不能再改并发路数");return NO;}
+    if (lanes!=1 && lanes!=2) {if(error)*error=WGSError(13,@"并发只支持单路或双路竞速");return NO;}
+    self.concurrentLanes=lanes;return YES;
 }
 + (void)setExecutionAllowedCheck:(BOOL (^)(void))check { gExecutionAllowed=[check copy]; }
 + (BOOL)runtimeReady:(NSString **)reason { return WGSServiceABI(gCreateSelector,5,reason); }
@@ -355,6 +408,29 @@ static NSDictionary *WGSReceipt(BOOL success,id response,id error) {
     if (buttons.count!=1) return @"服务端未提供唯一匹配的可用支付按钮，本次停止";
     self.payType=buttons.firstObject;return nil;
 }
+- (void)emitAggregateTerminal:(BOOL)terminal {
+    NSUInteger pending=0,successes=0;
+    for (WDGServiceLane *lane in self.lanes) {if(!lane.settled)++pending;else if(lane.success)++successes;}
+    NSMutableDictionary *r=[@{@"paymentInvoked":@NO,
+        @"concurrentLanes":@(self.lanes.count),
+        @"successCallbacks":@(successes),
+        @"completedRequests":@(self.lanes.count-pending),
+        @"pendingRequests":@(pending)} mutableCopy];
+    r[@"terminal"]=@(terminal);
+    if(!terminal) {
+        r[@"state"]=@"sending";r[@"apiSucceeded"]=@NO;
+        r[@"message"]=[NSString stringWithFormat:@"已发出 %lu 路请求，%lu 路已有结果",(unsigned long)self.lanes.count,(unsigned long)(self.lanes.count-pending)];
+    } else if(pending) {
+        r[@"state"]=@"unknown";r[@"apiSucceeded"]=@NO;
+        r[@"message"]=[NSString stringWithFormat:@"仍有 %lu 路未返回，订单结果待核对；未重试",(unsigned long)pending];
+    } else if(successes) {
+        r[@"state"]=@"apiSucceeded";r[@"apiSucceeded"]=@YES;
+        r[@"message"]=[NSString stringWithFormat:@"%lu 路创建接口返回成功；若服务端不去重可能生成多笔订单，请以微店订单列表为准",(unsigned long)successes];
+    } else {
+        r[@"state"]=@"failed";r[@"apiSucceeded"]=@NO;r[@"message"]=@"创建接口均未成功；未自动重试";
+    }
+    if(self.reply) self.reply([r copy]);
+}
 - (void)beginCreate {
     if (!self.active || self.finished || self.createStarted) return;
     if (!WGSAllowed()) {[self stop:@"微店已离开前台，未创建订单" state:@"cancelled"];return;}
@@ -368,32 +444,63 @@ static NSDictionary *WGSReceipt(BOOL success,id response,id error) {
     NSString *validation=[self validateConfirmedModel:self.confirmationModel];
     if (validation) {[self stop:validation state:@"failed"];return;}
     if (!WDGServiceDispatch(&_state,_generation)) {[self stop:@"任务已消费，不重复创建订单" state:@"failed"];return;}
-    self.createStarted=YES;++gCreateCalls;
+    NSUInteger laneCount=MIN(MAX(self.concurrentLanes,1),2);
+    NSMutableArray *lanes=[NSMutableArray array];
+    for (NSUInteger i=0;i<laneCount;++i) {
+        // Every lane owns typed copies. The native Service binds payButtonType
+        // and serializes the Thor payload later, so sharing one model is unsafe.
+        id request=WGSCloneRequest(self.requestModel);
+        id confirmation=WGSCloneConfirmation(self.confirmationModel);
+        if (!request || !confirmation || !WGSSetUnsigned(request,@"setPayButtonType:",self.payType.unsignedIntegerValue)) {
+            [self stop:@"竞速参数复制失败，未创建订单" state:@"failed"];return;
+        }
+        WDGServiceLane *lane=[WDGServiceLane new];lane.request=request;lane.confirmation=confirmation;
+        [lanes addObject:lane];
+    }
+    self.lanes=lanes;self.createStarted=YES;self.aggregateTimedOut=NO;
+    gCreateCalls+=lanes.count;
     self.savedPayType=WGSUnsigned(self.requestModel,@"payButtonType").unsignedIntegerValue;
-    ((void(*)(id,SEL,NSUInteger))objc_msgSend)(self.requestModel,@selector(setPayButtonType:),self.payType.unsignedIntegerValue);
-    self.payTypeBound=YES;[self progress:@"sending" message:@"直接创建订单一次，等待真实响应"];
+    [self progress:@"sending" message:lanes.count>1?@"双路竞速已发出，可能生成重复订单":@"已发出创建请求，等待真实响应"];
     self.timeoutTimer=[NSTimer timerWithTimeInterval:30 target:self selector:@selector(createTimedOut:) userInfo:nil repeats:NO];
     [NSRunLoop.mainRunLoop addTimer:self.timeoutTimer forMode:NSRunLoopCommonModes];
-    void (^callback)(BOOL,id,id)=^(BOOL success,id response,id nativeError) {
-        dispatch_async(dispatch_get_main_queue(),^{
-            if (self.finished || !self.createStarted || !WDGServiceResolve(&self->_state,self->_generation,success)) return;
-            ++gReplies;[self finish:WGSReceipt(success,response,nativeError)];
-        });
-    };
-    @try {
-        ((void(*)(id,SEL,id,id,id))objc_msgSend)(NSClassFromString(@"VDTradeConfOrderService"),NSSelectorFromString(gCreateSelector),self.requestModel,self.confirmationModel,[callback copy]);
-    } @catch (__unused NSException *e) { [self createTimedOut:nil]; }
+    for (WDGServiceLane *lane in lanes) {
+        void (^callback)(BOOL,id,id)=^(BOOL success,id response,id nativeError) {
+            dispatch_async(dispatch_get_main_queue(),^{
+                if (lane.settled) return;
+                lane.settled=YES;lane.success=success&&!nativeError;++gReplies;
+                BOOL pending=NO;
+                for (WDGServiceLane *other in self.lanes) if(!other.settled) pending=YES;
+                [self emitAggregateTerminal:!pending];
+                if (!pending && !self.finished) {
+                    self.finished=YES;self.active=NO;
+                    [self.timeoutTimer invalidate];self.timeoutTimer=nil;[self releaseModels];
+                }
+            });
+        };
+        @try {
+            ((void(*)(id,SEL,id,id,id))objc_msgSend)(NSClassFromString(@"VDTradeConfOrderService"),NSSelectorFromString(gCreateSelector),lane.request,lane.confirmation,[callback copy]);
+        } @catch (__unused NSException *e) {
+            WDGServiceTimeout(&_state,_generation);
+            for (WDGServiceLane *other in self.lanes) other.settled=YES;
+            [self emitAggregateTerminal:YES];
+            self.finished=YES;self.active=NO;[self releaseModels];return;
+        }
+    }
 }
 - (void)confirmTimedOut:(NSTimer *)timer {
     if (!self.createStarted && !self.finished) { self.confirming=NO;[self stop:@"确认接口超时，未创建订单；迟到确认不会继续提交" state:@"failed"]; }
 }
 - (void)createTimedOut:(NSTimer *)timer {
-    if (!self.createStarted || self.finished || _state.phase!=WDGServiceSending) return;
-    WDGServiceTimeout(&_state,_generation);[self.timeoutTimer invalidate];self.timeoutTimer=nil;
+    if (!self.createStarted || self.finished) return;
+    BOOL pending=NO;
+    for (WDGServiceLane *lane in self.lanes) if(!lane.settled) pending=YES;
+    if(!pending) return;
+    self.aggregateTimedOut=YES;WDGServiceTimeout(&_state,_generation);
+    [self.timeoutTimer invalidate];self.timeoutTimer=nil;
     [self releaseModels];
-    if (self.reply) self.reply(@{@"terminal":@YES,@"state":@"unknown",@"apiSucceeded":@NO,@"message":@"创建接口暂未返回，结果待核对；未重试",@"paymentInvoked":@NO});
-    // Retain callback identity for at most the native request's lifetime. A late
-    // Create result may settle unknown; it cannot initiate another request.
+    [self emitAggregateTerminal:YES];
+    // In-flight native callbacks stay registered; a late real result may update
+    // the aggregate, but this task can never send another Create.
 }
 - (BOOL)cancelBeforeCreate {
     if (self.createStarted) return NO;

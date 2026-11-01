@@ -39,7 +39,20 @@ static NSMutableArray<NSDictionary *> *ConfirmRequests;
 static NSMutableArray<NSDictionary *> *CreateRequests;
 static NSMutableArray<id> *ConfirmCallbacks;
 static NSMutableArray<id> *CreateCallbacks;
+static NSMutableArray *CreateRequestModels;
+static NSMutableArray *CreateConfirmationModels;
+static NSMutableArray *ConvertedConfirmationModels;
+static NSUInteger ExpectedCreateLanes;
+static NSUInteger NativeCreatesInFlight;
+static NSUInteger MaximumNativeCreatesInFlight;
+static void (^CreateObserved)(NSUInteger lane);
 static Class ConfirmationSubclass;
+
+// Parent implementation exposes this before dispatch; declaring the public
+// contract here also keeps this fixture buildable while header edits land.
+@interface WDGOrderService (FixtureConcurrentContract)
+- (BOOL)configureConcurrentLanes:(NSUInteger)lanes error:(NSError **)error;
+@end
 
 typedef void (^NativeReply)(BOOL, id, id);
 
@@ -106,14 +119,26 @@ typedef void (^NativeReply)(BOOL, id, id);
 @property(nonatomic, copy) NSString *quantity;
 @property(nonatomic, copy) NSString *price_type;
 @property(nonatomic) bool use_installment;
++ (instancetype)yy_modelWithDictionary:(NSDictionary *)dictionary;
 - (NSDictionary *)yy_modelToJSONObject;
 @end
 @implementation VDTradeConfOrderRequestItemDO
++ (instancetype)yy_modelWithDictionary:(NSDictionary *)dictionary {
+    if (![dictionary isKindOfClass:NSDictionary.class]) return nil;
+    VDTradeConfOrderRequestItemDO *item = [self new];
+    item.item_id = dictionary[@"item_id"];
+    item.item_sku_id = dictionary[@"item_sku_id"];
+    item.quantity = dictionary[@"quantity"];
+    item.price_type = dictionary[@"price_type"];
+    item.use_installment = [dictionary[@"use_installment"] boolValue];
+    return item;
+}
 - (NSDictionary *)yy_modelToJSONObject {
     return @{@"item_id": self.item_id ?: @"",
              @"item_sku_id": self.item_sku_id ?: @"",
              @"quantity": self.quantity ?: @"",
-             @"price_type": self.price_type ?: @""};
+             @"price_type": self.price_type ?: @"",
+             @"use_installment": @(self.use_installment)};
 }
 @end
 
@@ -124,9 +149,33 @@ typedef void (^NativeReply)(BOOL, id, id);
 @property(nonatomic, copy) NSString *address_id;
 @property(nonatomic, copy) NSString *wfr;
 @property(nonatomic) NSUInteger payButtonType;
+@property(nonatomic, readonly) NSArray *item_json;
++ (instancetype)yy_modelWithDictionary:(NSDictionary *)dictionary;
 - (NSDictionary *)yy_modelToJSONObject;
 @end
 @implementation VDTradeConfirmOrderRequestDO
++ (instancetype)yy_modelWithDictionary:(NSDictionary *)dictionary {
+    if (![dictionary isKindOfClass:NSDictionary.class]) return nil;
+    VDTradeConfirmOrderRequestDO *request = [self new];
+    // item_json is readonly in the native request model. Mapping its JSON must
+    // build RequestItemDO objects, then bind them through setItems:.
+    NSArray *inputItems = dictionary[@"items"] ?: dictionary[@"item_json"] ?: @[];
+    NSMutableArray *typedItems = [NSMutableArray array];
+    for (id input in inputItems) {
+        NSDictionary *json = [input isKindOfClass:VDTradeConfOrderRequestItemDO.class]
+            ? [input yy_modelToJSONObject] : input;
+        VDTradeConfOrderRequestItemDO *item = [VDTradeConfOrderRequestItemDO yy_modelWithDictionary:json];
+        if (!item) return nil;
+        [typedItems addObject:item];
+    }
+    request.items = typedItems;
+    for (NSString *key in @[@"source_id", @"channel", @"address_id", @"wfr"]) {
+        id value = dictionary[key];
+        if ([value isKindOfClass:NSString.class]) [request setValue:value forKey:key];
+    }
+    request.payButtonType = [dictionary[@"payButtonType"] unsignedIntegerValue];
+    return request;
+}
 - (instancetype)init {
     self = [super init];
     if (self) {
@@ -137,6 +186,13 @@ typedef void (^NativeReply)(BOOL, id, id);
         _wfr = @"";
     }
     return self;
+}
+- (NSArray *)item_json {
+    NSMutableArray *items = [NSMutableArray array];
+    for (VDTradeConfOrderRequestItemDO *item in self.items) {
+        [items addObject:item.yy_modelToJSONObject];
+    }
+    return [items copy];
 }
 - (NSDictionary *)yy_modelToJSONObject {
     NSMutableArray *items = [NSMutableArray array];
@@ -308,6 +364,7 @@ typedef void (^NativeReply)(BOOL, id, id);
         [options addObject:option];
     }
     model.pay_options = options;
+    [ConvertedConfirmationModels addObject:model];
     return model;
 }
 - (NSDictionary *)yy_modelToJSONObject {
@@ -359,8 +416,17 @@ typedef void (^NativeReply)(BOOL, id, id);
     return step;
 }
 @end
+@interface WDGFixtureTransportError : NSObject
+@property(nonatomic, strong) NSError *originError;
+@property(nonatomic) long long code;
+@property(nonatomic) long long serverCode;
+@end
+@implementation WDGFixtureTransportError
+@end
+
 static NSMutableArray<WDGFixtureStep *> *ConfirmSteps;
 static WDGFixtureStep *CreateStep;
+static NSArray<WDGFixtureStep *> *CreateSteps;
 
 static void FixtureDeliver(WDGFixtureStep *step, NativeReply result) {
     if (step.hanging) return;
@@ -427,9 +493,23 @@ static void FixtureCheckNativeRequest(id request) {
 + (void)createOrderRequestDO:(VDTradeConfirmOrderRequestDO *)request
              confirmOrderDO:(VDTradeConfirmOrderDO *)confirmation
                      result:(void (^)(BOOL, id, id))result {
-    ++CreateCalls;
+    NSUInteger lane = CreateCalls++;
     [CreateDates addObject:NSDate.date];
-    [CreateCallbacks addObject:[result copy]];
+    [CreateRequestModels addObject:request];
+    [CreateConfirmationModels addObject:confirmation];
+    ++NativeCreatesInFlight;
+    MaximumNativeCreatesInFlight = MAX(MaximumNativeCreatesInFlight, NativeCreatesInFlight);
+    __block BOOL settled = NO;
+    NSUInteger generation = FixtureGeneration;
+    NativeReply trackedReply = ^(BOOL ok, id response, id error) {
+        if (generation != FixtureGeneration) return;
+        if (!settled) {
+            settled = YES;
+            --NativeCreatesInFlight;
+        }
+        result(ok, response, error);
+    };
+    [CreateCallbacks addObject:[trackedReply copy]];
     FixtureCheckNativeRequest(request);
     [CreateRequests addObject:request.yy_modelToJSONObject];
     if (![confirmation isKindOfClass:VDTradeConfirmOrderDO.class]) {
@@ -438,8 +518,16 @@ static void FixtureCheckNativeRequest(id request) {
     if (ExpectedDueAt && [NSDate.date compare:ExpectedDueAt] == NSOrderedAscending) {
         NativeViolation = @"Create was sent before dueAt";
     }
-    if (CreateCalls > 1) NativeViolation = @"Create retried or duplicate-dispatched";
-    FixtureDeliver(CreateStep, result);
+    if (CreateCalls > ExpectedCreateLanes || NativeCreatesInFlight > 2) {
+        NativeViolation = @"Create exceeded configured lanes or two simultaneous requests";
+    }
+    WDGFixtureStep *step = CreateSteps ? (lane < CreateSteps.count ? CreateSteps[lane] : nil) : CreateStep;
+    if (!step) {
+        NativeViolation = @"unexpected Create invocation (lane script exhausted)";
+        return;
+    }
+    if (CreateObserved) CreateObserved(lane);
+    FixtureDeliver(step, trackedReply);
 }
 @end
 
@@ -452,6 +540,7 @@ static void FixtureCheckNativeRequest(id request) {
 @property(nonatomic, strong) NSMutableArray<NSDictionary *> *terminals;
 @property(nonatomic, strong) NSMutableArray<NSDictionary *> *progress;
 @property(nonatomic) NSUInteger savedPayButtonType;
+@property(nonatomic) NSUInteger concurrentLanes;
 @end
 @implementation WDGFixtureRun
 @end
@@ -599,6 +688,7 @@ static WDGFixtureRun *FixturePrepare(VDTradeConfirmOrderRequestDO *request,
     run.service = service;
     run.request = request;
     run.savedPayButtonType = request.payButtonType;
+    run.concurrentLanes = 1;
     run.taskID = [NSUUID UUID].UUIDString;
     run.dueAt = [NSDate dateWithTimeIntervalSinceNow:dueDelay];
     run.receipts = [NSMutableArray array];
@@ -630,6 +720,17 @@ static void FixtureValidateReceipts(WDGFixtureRun *run) {
     for (NSDictionary *receipt in run.receipts) {
         REQUIRE([receipt[@"terminal"] isKindOfClass:NSNumber.class],
                 @"every stage receipt must explicitly contain terminal BOOL");
+        for (NSString *key in @[@"apiSucceeded", @"paymentInvoked", @"concurrentLanes",
+                                @"successCallbacks", @"completedRequests", @"pendingRequests"]) {
+            REQUIRE([receipt[key] isKindOfClass:NSNumber.class],
+                    [NSString stringWithFormat:@"receipt missing numeric %@: %@", key, receipt]);
+        }
+        REQUIRE([receipt[@"state"] isKindOfClass:NSString.class] &&
+                [receipt[@"message"] isKindOfClass:NSString.class], @"receipt lacks state/message strings");
+        REQUIRE([receipt[@"concurrentLanes"] unsignedIntegerValue] == run.concurrentLanes,
+                @"receipt disagrees with configured concurrentLanes");
+        REQUIRE([receipt[@"successCallbacks"] unsignedIntegerValue] <=
+                [receipt[@"completedRequests"] unsignedIntegerValue], @"success callbacks exceed completed lanes");
         REQUIRE(![receipt[@"paymentInvoked"] boolValue], @"fixture must never invoke payment");
         if ([receipt[@"terminal"] boolValue]) {
             REQUIRE([states containsObject:receipt[@"state"]], @"unrecognized terminal state");
@@ -686,6 +787,14 @@ static void FixtureReset(void) {
     CreateRequests = [NSMutableArray array];
     ConfirmCallbacks = [NSMutableArray array];
     CreateCallbacks = [NSMutableArray array];
+    CreateRequestModels = [NSMutableArray array];
+    CreateConfirmationModels = [NSMutableArray array];
+    ConvertedConfirmationModels = [NSMutableArray array];
+    ExpectedCreateLanes = 1;
+    NativeCreatesInFlight = 0;
+    MaximumNativeCreatesInFlight = 0;
+    CreateObserved = nil;
+    CreateSteps = nil;
     ConfirmSteps = [NSMutableArray array];
     CreateStep = [WDGFixtureStep success:@{@"order_id": @"fixture-order-1"}];
     Runs = [NSMutableArray array];
@@ -1328,11 +1437,388 @@ static void FixtureServiceCases(void) {
     });
 }
 
+static void FixtureLiveCartCases(void) {
+    FixtureCase(@"cart follows live checked flags without another capture", ^{
+        VDTradeGoodsItemDO *a = FixtureGoods(@"cart-1", @"sku-1", @"1", YES);
+        VDTradeGoodsItemDO *b = FixtureGoods(@"cart-2", @"sku-2", @"2", NO);
+        FixtureCapture(@[a, b]);
+        NSUInteger callbacks = OriginalCallbacks;
+        NSString *before = WDGCartSnapshotKey();
+        a.isSelected = NO;
+        b.isSelected = YES;
+        NSArray *picked = WDGCartSelectedLines();
+        REQUIRE(picked.count == 1, @"live checked flags were not refreshed");
+        NSDictionary *raw = WDGCartRawLine(FixtureLineKey(picked[0]));
+        REQUIRE([raw[@"skuId"] isEqual:@"sku-2"] && [raw[@"count"] isEqual:@"2"],
+                @"selection still follows the old checked row");
+        REQUIRE(![before isEqual:WDGCartSnapshotKey()], @"selection change retained the old fingerprint");
+        REQUIRE(OriginalCallbacks == callbacks, @"reading live selection triggered a synthetic capture");
+        a.isSelected = NO;
+        b.isSelected = NO;
+        REQUIRE(WDGCartSelectedLines().count == 0 && WDGCartCopyRawSelection().count == 0,
+                @"live unchecked cart silently selected all");
+        REQUIRE(!WDGCartSnapshotKey(), @"unchecked cart retained submit identity");
+    });
+    FixtureCase(@"cart follows live quantity and SKU into raw identity and typed request", ^{
+        VDTradeGoodsItemDO *goods = FixtureGoods(@"cart-1", @"sku-1", @"1", YES);
+        FixtureCapture(@[goods]);
+        NSString *oldKey = FixtureLineKey(WDGCartSelectedLines()[0]);
+        NSString *snapshot = WDGCartSnapshotKey();
+        NSUInteger callbacks = OriginalCallbacks;
+        goods.count = @"3";
+        goods.skuId = @"sku-live";
+        goods.skuName = @"Live SKU";
+        NSArray *picked = WDGCartSelectedLines();
+        REQUIRE(picked.count == 1 && [picked[0][@"quantity"] isEqual:@"3"], @"quantity stayed frozen at capture");
+        NSString *newKey = FixtureLineKey(picked[0]);
+        REQUIRE(![newKey isEqual:oldKey] && !WDGCartRawLine(oldKey), @"SKU change retained old line identity");
+        NSDictionary *raw = WDGCartRawLine(newKey);
+        REQUIRE([raw[@"skuId"] isEqual:@"sku-live"] && [raw[@"count"] isEqual:@"3"], @"raw map stayed stale");
+        REQUIRE(![snapshot isEqual:WDGCartSnapshotKey()], @"quantity/SKU change did not change fingerprint");
+        NSError *error = nil;
+        VDTradeConfirmOrderRequestDO *request = WDGCartBuildRequest(&error);
+        REQUIRE(request && !error && request.items.count == 1, @"live cart did not build a typed request");
+        REQUIRE([request.items[0].item_sku_id isEqual:@"sku-live"] &&
+                [request.items[0].quantity isEqual:@"3"], @"builder used captured SKU/quantity");
+        REQUIRE(OriginalCallbacks == callbacks && ConfirmCalls == 0 && CreateCalls == 0,
+                @"live builder fetched or dispatched a network service");
+    });
+    FixtureCase(@"cart explicit line ignores live checks and nil resumes following", ^{
+        VDTradeGoodsItemDO *a = FixtureGoods(@"cart-1", @"sku-1", @"1", YES);
+        VDTradeGoodsItemDO *b = FixtureGoods(@"cart-2", @"sku-2", @"1", NO);
+        FixtureCapture(@[a, b]);
+        NSString *manualKey = FixtureLineKey(WDGCartCandidates()[1]);
+        REQUIRE(WDGCartChooseLine(manualKey), @"manual line choice failed");
+        a.isSelected = YES;
+        b.isSelected = YES;
+        REQUIRE(WDGCartSelectedLines().count == 1 &&
+                [FixtureLineKey(WDGCartSelectedLines()[0]) isEqual:manualKey], @"explicit mode followed other checked rows");
+        a.isSelected = NO;
+        b.isSelected = NO;
+        REQUIRE(WDGCartSelectedLines().count == 1, @"explicit choice was lost when the App unchecked rows");
+        a.isSelected = YES;
+        REQUIRE(WDGCartChooseLine(nil), @"nil did not restore live mode");
+        NSArray *picked = WDGCartSelectedLines();
+        REQUIRE(picked.count == 1 && [WDGCartRawLine(FixtureLineKey(picked[0]))[@"skuId"] isEqual:@"sku-1"],
+                @"nil restored stale checked flags");
+        b.isSelected = YES;
+        REQUIRE(WDGCartSelectedLines().count == 2, @"restored live mode did not follow a later check change");
+        REQUIRE(OriginalCallbacks == 1, @"live mode recaptured instead of reading the existing model");
+    });
+    FixtureCase(@"cart clear forgets still-live model until a real capture", ^{
+        VDTradeGoodsItemDO *goods = FixtureGoods(@"cart-1", @"sku-1", @"1", YES);
+        VDTradeCartListDO *list = FixtureCart(@[goods]);
+        [FixtureController() fetchDataSucceed:YES cartListDO:list];
+        NSString *key = FixtureLineKey(WDGCartSelectedLines()[0]);
+        REQUIRE(WDGCartChooseLine(key), @"manual choice failed before clear");
+        WDGCartClear();
+        goods.isSelected = YES;
+        goods.count = @"4";
+        goods.skuId = @"sku-after-clear";
+        REQUIRE(WDGCartSelectedLines().count == 0 && WDGCartCandidates().count == 0 &&
+                WDGCartCopyRawSelection().count == 0 && !WDGCartRawLine(key) && !WDGCartSnapshotKey(),
+                @"clear automatically recaptured the still-live model");
+        REQUIRE(WDGCartChooseLine(nil) && WDGCartSelectedLines().count == 0, @"nil choice revived a cleared cart");
+        NSError *error = nil;
+        REQUIRE(!WDGCartBuildRequest(&error) && error && OriginalCallbacks == 1,
+                @"cleared cart built a stale request or fetched again");
+        REQUIRE(ConfirmCalls == 0 && CreateCalls == 0, @"clear fixture reached a network service");
+        [FixtureController() fetchDataSucceed:YES cartListDO:list];
+        REQUIRE(WDGCartSelectedLines().count == 1, @"a real new capture did not repopulate the cart");
+    });
+}
+
+static void FixtureConfigureLanes(WDGFixtureRun *run, NSUInteger lanes) {
+    NSError *error = nil;
+    REQUIRE([run.service configureConcurrentLanes:lanes error:&error] && !error,
+            [NSString stringWithFormat:@"configure lanes=%lu failed: %@", (unsigned long)lanes, error]);
+    run.concurrentLanes = lanes;
+    ExpectedCreateLanes = lanes;
+}
+static void FixtureAggregate(NSDictionary *receipt, NSString *state, NSUInteger lanes,
+                             NSUInteger successes, NSUInteger completed, NSUInteger pending) {
+    REQUIRE([receipt[@"terminal"] boolValue] && [receipt[@"state"] isEqual:state],
+            [NSString stringWithFormat:@"wanted terminal %@, got %@", state, receipt]);
+    REQUIRE([receipt[@"apiSucceeded"] boolValue] == [state isEqual:@"apiSucceeded"],
+            @"aggregate API success disagrees with settled state");
+    REQUIRE([receipt[@"concurrentLanes"] unsignedIntegerValue] == lanes &&
+            [receipt[@"successCallbacks"] unsignedIntegerValue] == successes &&
+            [receipt[@"completedRequests"] unsignedIntegerValue] == completed &&
+            [receipt[@"pendingRequests"] unsignedIntegerValue] == pending,
+            [NSString stringWithFormat:@"incorrect per-lane aggregate: %@", receipt]);
+    REQUIRE(![receipt[@"paymentInvoked"] boolValue], @"aggregate invoked payment");
+}
+static WDGFixtureStep *FixtureHangingCreate(void) {
+    WDGFixtureStep *step = [WDGFixtureStep success:@{@"order_id": @"fixture-unresolved"}];
+    step.hanging = YES;
+    return step;
+}
+static WDGFixtureStep *FixtureFailedCreate(void) {
+    WDGFixtureStep *step = [WDGFixtureStep success:nil];
+    step.ok = NO;
+    step.error = [NSError errorWithDomain:@"FixtureBusinessFailure" code:6 userInfo:nil];
+    return step;
+}
+static void FixtureConcurrentCases(void) {
+    FixtureCase(@"service lanes accepts only 1/2, remains immutable after submit", ^{
+        VDTradeConfirmOrderRequestDO *request = FixtureRequest();
+        FixtureDefaultScript(request);
+        WDGFixtureRun *run = FixturePrepare(request, nil, 0.10);
+        FixtureConfigureLanes(run, 1);
+        FixtureConfigureLanes(run, 2);
+        for (NSNumber *lanes in @[@0, @3, @(NSUIntegerMax)]) {
+            NSError *error = nil;
+            REQUIRE(![run.service configureConcurrentLanes:lanes.unsignedIntegerValue error:&error] && error,
+                    @"out-of-range lanes were accepted");
+        }
+        FixtureStart(run);
+        NSError *error = nil;
+        REQUIRE(![run.service configureConcurrentLanes:1 error:&error] && error, @"active task accepted a lane change");
+        FixtureNoEarlyCreate(run);
+        NSDictionary *terminal = FixtureFinish(run);
+        FixtureAggregate(terminal, @"apiSucceeded", 2, 2, 2, 0);
+        REQUIRE(CreateCalls == 2 && ConfirmCalls == 1, @"configuration rejection changed dispatch count");
+        error = nil;
+        REQUIRE(![run.service configureConcurrentLanes:1 error:&error] && error, @"settled task accepted reconfiguration");
+        FixtureNoResubmit(run);
+    });
+    FixtureCase(@"service two lanes start at due, one Confirm and no early terminal", ^{
+        VDTradeConfirmOrderRequestDO *request = FixtureRequest();
+        FixtureDefaultScript(request);
+        WDGFixtureStep *late = [WDGFixtureStep success:@{@"order_id": @"fixture-lane-1"}];
+        late.delay = 0.075;
+        CreateSteps = @[[WDGFixtureStep success:@{@"order_id": @"fixture-lane-0"}], late];
+        WDGFixtureRun *run = FixturePrepare(request, nil, 0.10);
+        FixtureConfigureLanes(run, 2);
+        FixtureStart(run);
+        FixtureNoEarlyCreate(run);
+        REQUIRE(FixturePump(0.25, ^BOOL { return CreateCalls == 2; }), @"both lanes did not dispatch at due");
+        FixturePump(0.018, nil);
+        REQUIRE(run.terminals.count == 0 && NativeCreatesInFlight == 1, @"lane 0 success finished while lane 1 was pending");
+        for (NSDate *date in CreateDates) REQUIRE([date compare:run.dueAt] != NSOrderedAscending, @"lane sent before due");
+        FixtureAggregate(FixtureFinish(run), @"apiSucceeded", 2, 2, 2, 0);
+        REQUIRE(ConfirmCalls == 1 && CreateCalls == 2 && run.terminals.count == 1,
+                @"two-lane completion repeated warmup, Create or terminal");
+        REQUIRE(request.payButtonType == run.savedPayButtonType, @"two-lane result mutated original payment type");
+    });
+    FixtureCase(@"service two lanes blocked warmup still uses maximum two Confirms", ^{
+        VDTradeConfirmOrderRequestDO *request = FixtureRequest();
+        NSMutableDictionary *blocked = [FixtureConfirmation(request) mutableCopy];
+        blocked[@"cannot_submit"] = @YES;
+        WDGFixtureStep *first = [WDGFixtureStep success:blocked];
+        first.copies = 2;
+        FixtureScript(@[first, [WDGFixtureStep success:FixtureConfirmation(request)]]);
+        WDGFixtureRun *run = FixturePrepare(request, nil, 0.10);
+        FixtureConfigureLanes(run, 2);
+        FixtureStart(run);
+        FixtureNoEarlyCreate(run);
+        REQUIRE(ConfirmCalls == 1, @"lane count multiplied warmup Confirm");
+        FixtureAggregate(FixtureFinish(run), @"apiSucceeded", 2, 2, 2, 0);
+        REQUIRE(ConfirmCalls == 2 && CreateCalls == 2, @"blocked two-lane warmup repeated Confirm per lane");
+        REQUIRE([ConfirmDates[1] compare:run.dueAt] != NSOrderedAscending, @"blocked retry occurred before due");
+        NativeReply stale = ConfirmCallbacks[0];
+        stale(YES, blocked, nil);
+        FixturePump(0.018, nil);
+        REQUIRE(ConfirmCalls == 2 && CreateCalls == 2 && run.terminals.count == 1, @"stale warmup duplicated lane dispatch");
+    });
+    for (NSNumber *failureFirst in @[@YES, @NO]) {
+        FixtureCase([NSString stringWithFormat:@"service mixed business failure/success failureFirst=%@", failureFirst], ^{
+            VDTradeConfirmOrderRequestDO *request = FixtureRequest();
+            FixtureDefaultScript(request);
+            WDGFixtureStep *failure = FixtureFailedCreate();
+            WDGFixtureStep *success = [WDGFixtureStep success:@{@"order_id": @"fixture-one-success"}];
+            (failureFirst.boolValue ? success : failure).delay = 0.055;
+            CreateSteps = failureFirst.boolValue ? @[failure, success] : @[success, failure];
+            WDGFixtureRun *run = FixturePrepare(request, @3, 0.08);
+            FixtureConfigureLanes(run, 2);
+            FixtureStart(run);
+            REQUIRE(FixturePump(0.25, ^BOOL { return CreateCalls == 2; }), @"mixed lanes did not dispatch");
+            FixturePump(0.012, nil);
+            REQUIRE(run.terminals.count == 0, @"first business result prematurely settled both lanes");
+            FixtureAggregate(FixtureFinish(run), @"apiSucceeded", 2, 1, 2, 0);
+            REQUIRE(CreateCalls == 2 && run.terminals.count == 1, @"mixed results retried or duplicated terminal");
+        });
+    }
+    FixtureCase(@"service two business failures settle failed without retries", ^{
+        VDTradeConfirmOrderRequestDO *request = FixtureRequest();
+        FixtureDefaultScript(request);
+        CreateSteps = @[FixtureFailedCreate(), FixtureFailedCreate()];
+        WDGFixtureRun *run = FixturePrepare(request, @3, 0.08);
+        FixtureConfigureLanes(run, 2);
+        FixtureStart(run);
+        FixtureAggregate(FixtureFinish(run), @"failed", 2, 0, 2, 0);
+        REQUIRE(CreateCalls == 2 && run.terminals.count == 1, @"all failures dispatched replacement lanes");
+    });
+    FixtureCase(@"service all-settled transport unknown dominates another API success", ^{
+        VDTradeConfirmOrderRequestDO *request = FixtureRequest();
+        FixtureDefaultScript(request);
+        WDGFixtureTransportError *error = [WDGFixtureTransportError new];
+        error.originError = [NSError errorWithDomain:NSURLErrorDomain code:-1001 userInfo:nil];
+        error.code = 8;
+        WDGFixtureStep *unknown = FixtureFailedCreate();
+        unknown.error = error;
+        unknown.delay = 0.045;
+        CreateSteps = @[[WDGFixtureStep success:@{@"order_id": @"fixture-known"}], unknown];
+        WDGFixtureRun *run = FixturePrepare(request, @3, 0.08);
+        FixtureConfigureLanes(run, 2);
+        FixtureStart(run);
+        FixtureAggregate(FixtureFinish(run), @"unknown", 2, 1, 2, 0);
+        REQUIRE(CreateCalls == 2 && run.terminals.count == 1 && NativeCreatesInFlight == 0,
+                @"all-settled unknown retried or claimed aggregate success");
+    });
+    FixtureCase(@"service one hanging lane expires unknown pending=1, late success updates once", ^{
+        VDTradeConfirmOrderRequestDO *request = FixtureRequest();
+        FixtureDefaultScript(request);
+        CreateSteps = @[[WDGFixtureStep success:@{@"order_id": @"fixture-first"}], FixtureHangingCreate()];
+        WDGFixtureRun *run = FixturePrepare(request, @3, 0.08);
+        FixtureConfigureLanes(run, 2);
+        FixtureStart(run);
+        REQUIRE(FixturePump(0.25, ^BOOL { return CreateCalls == 2; }), @"hanging lanes did not dispatch");
+        FixturePump(0.018, nil);
+        REQUIRE(run.terminals.count == 0 && NativeCreatesInFlight == 1, @"settled before hanging lane timeout");
+        REQUIRE(![run.service cancelBeforeCreate], @"pending Create was reported as revoked");
+        [run.service expireUnresolvedTask:run.taskID];
+        FixtureAggregate(FixtureFinish(run), @"unknown", 2, 1, 1, 1);
+        [run.service expireUnresolvedTask:run.taskID];
+        FixturePump(0.012, nil);
+        REQUIRE(run.terminals.count == 1, @"repeat expiry duplicated unknown receipt");
+        NativeReply late = CreateCallbacks[1];
+        late(YES, @{@"order_id": @"fixture-late"}, nil);
+        late(YES, @{@"order_id": @"fixture-late"}, nil);
+        REQUIRE(FixturePump(0.20, ^BOOL { return run.terminals.count == 2; }), @"late result did not update aggregate");
+        FixtureAggregate(run.terminals.lastObject, @"apiSucceeded", 2, 2, 2, 0);
+        NativeReply old = CreateCallbacks[0];
+        old(YES, @{@"order_id": @"fixture-first-duplicate"}, nil);
+        late(NO, nil, [NSError errorWithDomain:@"Fixture" code:8 userInfo:nil]);
+        FixturePump(0.018, nil);
+        FixtureValidateReceipts(run);
+        REQUIRE(run.terminals.count == 2 && CreateCalls == 2 && NativeCreatesInFlight == 0,
+                @"late duplicate changed count, emitted terminal or retried");
+        FixtureNoResubmit(run);
+    });
+    FixtureCase(@"service duplicate lane callback never counts as the other lane", ^{
+        VDTradeConfirmOrderRequestDO *request = FixtureRequest();
+        FixtureDefaultScript(request);
+        WDGFixtureStep *duplicate = [WDGFixtureStep success:@{@"order_id": @"fixture-duplicate"}];
+        duplicate.copies = 3;
+        CreateSteps = @[duplicate, FixtureHangingCreate()];
+        WDGFixtureRun *run = FixturePrepare(request, @3, 0.08);
+        FixtureConfigureLanes(run, 2);
+        FixtureStart(run);
+        REQUIRE(FixturePump(0.25, ^BOOL { return CreateCalls == 2; }), @"duplicate test did not dispatch both lanes");
+        FixturePump(0.018, nil);
+        REQUIRE(run.terminals.count == 0, @"duplicate lane 0 callbacks falsely completed lane 1");
+        NativeReply lane1 = CreateCallbacks[1];
+        lane1(NO, nil, [NSError errorWithDomain:@"FixtureBusiness" code:3 userInfo:nil]);
+        FixtureAggregate(FixtureFinish(run), @"apiSucceeded", 2, 1, 2, 0);
+        NativeReply lane0 = CreateCallbacks[0];
+        lane0(YES, @{@"order_id": @"fixture-duplicate"}, nil);
+        FixturePump(0.018, nil);
+        REQUIRE(run.terminals.count == 1 && CreateCalls == 2, @"settled duplicate emitted another result");
+    });
+    FixtureCase(@"service two in-flight lanes have isolated typed models and mutable payment binding", ^{
+        VDTradeConfirmOrderRequestDO *request = FixtureRequest();
+        request.items[0].use_installment = YES;
+        NSDictionary *originalJSON = request.yy_modelToJSONObject;
+        FixtureDefaultScript(request);
+        CreateSteps = @[FixtureHangingCreate(), FixtureHangingCreate()];
+        WDGFixtureRun *run = FixturePrepare(request, @3, 0.08);
+        FixtureConfigureLanes(run, 2);
+        __block BOOL observedFirst = NO;
+        CreateObserved = ^(NSUInteger lane) {
+            if (lane == 0) {
+                observedFirst = YES;
+                REQUIRE(![run.service cancelBeforeCreate], @"first Create was falsely reported as revoked");
+            }
+        };
+        FixtureStart(run);
+        REQUIRE(FixturePump(0.25, ^BOOL { return CreateCalls == 2; }), @"second lane waited for first callback");
+        REQUIRE(observedFirst && MaximumNativeCreatesInFlight == 2 && NativeCreatesInFlight == 2,
+                @"driver did not issue at most two simultaneous requests");
+        VDTradeConfirmOrderRequestDO *a = CreateRequestModels[0];
+        VDTradeConfirmOrderRequestDO *b = CreateRequestModels[1];
+        VDTradeConfirmOrderDO *ca = CreateConfirmationModels[0];
+        VDTradeConfirmOrderDO *cb = CreateConfirmationModels[1];
+        VDTradeConfirmOrderDO *original = ConvertedConfirmationModels.firstObject;
+        REQUIRE(a != b && a != request && b != request && a.items != b.items &&
+                a.items[0] != b.items[0] && a.items[0] != request.items[0] && b.items[0] != request.items[0],
+                @"lanes shared original request, items array or typed item instances");
+        REQUIRE(ca != cb && ca != original && cb != original && ca.shop_list[0] != cb.shop_list[0] &&
+                ca.shop_list[0].item_list[0] != cb.shop_list[0].item_list[0] && ca.pay_options[0] != cb.pay_options[0],
+                @"confirmation clones shared native models");
+        REQUIRE([ca.yy_modelToJSONObject isEqual:original.yy_modelToJSONObject] &&
+                [cb.yy_modelToJSONObject isEqual:original.yy_modelToJSONObject], @"confirmation clone changed fingerprint");
+        NSMutableDictionary *boundJSON = [originalJSON mutableCopy];
+        boundJSON[@"payButtonType"] = @3;
+        REQUIRE([a.yy_modelToJSONObject isEqual:boundJSON] && [b.yy_modelToJSONObject isEqual:boundJSON],
+                @"request clone lost fields, installment or typed item mapping");
+        a.payButtonType = 41;
+        a.items[0].quantity = @"9";
+        ca.isAgreementChecked = !ca.isAgreementChecked;
+        REQUIRE(b.payButtonType == 3 && request.payButtonType == 99 && [b.items[0].quantity isEqual:@"1"] &&
+                [request.items[0].quantity isEqual:@"1"], @"lane 0 payment/item mutation leaked to lane 1 or original");
+        REQUIRE(cb.isAgreementChecked == original.isAgreementChecked && [request.yy_modelToJSONObject isEqual:originalJSON],
+                @"lane 0 confirmation/payment mutation leaked to original");
+        for (NativeReply reply in CreateCallbacks) reply(YES, @{@"order_id": @"fixture-isolated"}, nil);
+        FixtureAggregate(FixtureFinish(run), @"apiSucceeded", 2, 2, 2, 0);
+        REQUIRE(run.terminals.count == 1, @"first-Create cancellation hook produced a cancelled terminal");
+    });
+    FixtureCase(@"fake model converters round-trip typeditems and readonly item_json", ^{
+        VDTradeConfirmOrderRequestDO *request = FixtureRequest();
+        request.items[0].use_installment = YES;
+        VDTradeConfirmOrderRequestDO *clone = [VDTradeConfirmOrderRequestDO yy_modelWithDictionary:request.yy_modelToJSONObject];
+        REQUIRE(clone && clone != request && clone.items[0] != request.items[0] &&
+                [clone.items[0] isKindOfClass:VDTradeConfOrderRequestItemDO.class] &&
+                [clone.yy_modelToJSONObject isEqual:request.yy_modelToJSONObject], @"fake request converter is not a typed deep clone");
+        NSMutableDictionary *viaItemJSON = [request.yy_modelToJSONObject mutableCopy];
+        [viaItemJSON removeObjectForKey:@"items"];
+        viaItemJSON[@"item_json"] = request.item_json;
+        VDTradeConfirmOrderRequestDO *alternate = [VDTradeConfirmOrderRequestDO yy_modelWithDictionary:viaItemJSON];
+        REQUIRE([alternate.yy_modelToJSONObject isEqual:request.yy_modelToJSONObject], @"readonly item_json mapping lost fields");
+        NSMutableDictionary *json = [FixtureConfirmation(request) mutableCopy];
+        json[@"agreement_info_list"] = @[@{@"agreement_name": @"Display"}];
+        json[@"fixture_real_agreements"] = @[@{@"agreement_name": @"Required"}];
+        json[@"fixture_checkbox"] = @YES;
+        json[@"isAgreementChecked"] = @YES;
+        VDTradeConfirmOrderDO *model = [VDTradeConfirmOrderDO yy_modelWithDictionary:json];
+        VDTradeConfirmOrderDO *copy = [VDTradeConfirmOrderDO yy_modelWithDictionary:model.yy_modelToJSONObject];
+        REQUIRE([copy.yy_modelToJSONObject isEqual:model.yy_modelToJSONObject] && copy.shop_list[0] != model.shop_list[0] &&
+                copy.pay_options[0] != model.pay_options[0], @"confirmation conversion changed price/agreements/checked fingerprint");
+        REQUIRE(ConfirmCalls == 0 && CreateCalls == 0 && NativeVMInitializations == 0, @"converter test invoked a service or VM");
+    });
+    for (NSString *gate in @[@"price", @"SKU", @"cap", @"protocol", @"blocked"]) {
+        FixtureCase([@"service two lanes blocked gate sends zero Create: " stringByAppendingString:gate], ^{
+            VDTradeConfirmOrderRequestDO *request = FixtureRequest();
+            NSMutableDictionary *json = [FixtureConfirmation(request) mutableCopy];
+            if ([gate isEqual:@"price"]) json[@"total_pay_price"] = @"unknown-price";
+            if ([gate isEqual:@"cap"]) json[@"total_pay_price"] = @"100.01";
+            if ([gate isEqual:@"SKU"]) json[@"shop_list"] = @[@{@"item_list": @[@{@"item_id": @"item-1", @"item_sku_id": @"wrong-sku", @"quantity": @"1"}]}];
+            if ([gate isEqual:@"protocol"]) {
+                json[@"agreement_info_list"] = @[@{@"agreement_name": @"Required"}];
+                json[@"fixture_real_agreements"] = json[@"agreement_info_list"];
+                json[@"isAgreementChecked"] = @NO;
+            }
+            if ([gate isEqual:@"blocked"]) json[@"cannot_submit"] = @YES;
+            FixtureScript([gate isEqual:@"blocked"]
+                ? @[[WDGFixtureStep success:json], [WDGFixtureStep success:json]]
+                : @[[WDGFixtureStep success:json]]);
+            WDGFixtureRun *run = FixturePrepare(request, @3, 0.08);
+            FixtureConfigureLanes(run, 2);
+            FixtureStart(run);
+            FixtureAggregate(FixtureFinish(run), @"failed", 2, 0, 0, 0);
+            REQUIRE(CreateCalls == 0 && ConfirmCalls == ([gate isEqual:@"blocked"] ? 2 : 1),
+                    @"gate failure reached Create or multiplied Confirm by lanes");
+        });
+    }
+}
+
 int main(int argc, const char *argv[]) {
     @autoreleasepool {
         REQUIRE(NSThread.isMainThread, @"fixture main must run on the Foundation main thread");
         FixtureCartCases();
+        FixtureLiveCartCases();
         FixtureServiceCases();
+        FixtureConcurrentCases();
         fprintf(stdout, "cart_preheat_mock: %lu passed, %lu failed\n",
                 (unsigned long)CasesPassed, (unsigned long)CasesFailed);
         return CasesFailed ? 1 : 0;

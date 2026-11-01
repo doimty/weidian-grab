@@ -17,6 +17,10 @@ FOUNDATION_EXPORT NSString * const WDGBuildID;
 - (void)clearSnapshot;
 - (BOOL)armAt:(NSDate *)date action:(NSString *)action payType:(NSNumber * _Nullable)payType error:(NSError **)error;
 - (BOOL)armCartAt:(NSDate *)date maximumTotal:(NSDecimalNumber *)maximumTotal error:(NSError **)error;
+// lanes: 1 keeps the tested single submission; 2 races two independent
+// CreateOrder requests for the same cart template. The server may create more
+// than one order. Validated before any request is sent.
+- (BOOL)armCartAt:(NSDate *)date maximumTotal:(NSDecimalNumber *)maximumTotal concurrentLanes:(NSUInteger)lanes error:(NSError **)error;
 - (void)cancelTask:(NSString *)reason;
 - (NSString * _Nullable)exportReport:(NSError **)error;
 @end

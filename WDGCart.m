@@ -18,6 +18,28 @@ static NSUInteger gCaptures;
 static BOOL gInstalled;
 static void (*gOriginalFetch)(id,SEL,BOOL,id);
 static NSDictionary *gRouteContext;
+static __weak id gLiveList;
+static __weak id gLiveController;
+static BOOL gAwaitingNativeCallback;
+static BOOL gSyncing;
+static NSString *gLiveSource;
+static NSUInteger gLiveReads;
+static NSUInteger gRowBuilds;
+static NSUInteger gSnapshotHashes;
+static NSUInteger gClearEpoch;
+static NSArray *gKeyIdentity;
+static NSString *gSnapshot;
+static void (*gOriginalWillAppear)(id,SEL,BOOL);
+
+@interface WGCLineState : NSObject
+@property(nonatomic,weak) id nativeItem;
+@property(nonatomic,copy) NSArray *values;
+@property(nonatomic,copy) NSDictionary *row;
+@property(nonatomic,copy) NSDictionary *raw;
+@end
+@implementation WGCLineState
+@end
+static NSDictionary<NSArray *,WGCLineState *> *gLineStates;
 
 static const char *WGCType(const char *t) { if(!t)return "";while(*t&&strchr("rnNoORV",*t))++t;return t; }
 static BOOL WGCObject(const char *t) { t=WGCType(t);return t[0]=='@'&&(t[1]=='\0'||t[1]=='"'); }
@@ -64,12 +86,17 @@ static BOOL WGCSet(id o,NSString *name,id value) {
     if(!WGCTyped(m,3,'v')||!WGCObject(a))return NO;
     ((void(*)(id,SEL,id))objc_msgSend)(o,sel,value);return YES;
 }
-static void WGCCollect(id list,id controller) {
+static void WGCEmptySnapshot(void) {
+    gCandidates=@[];gRaw=@{};gLineStates=@{};gRouteContext=@{};
+    gKeyIdentity=nil;gSnapshot=nil;
+}
+static BOOL WGCCollect(id list,id controller) {
     Class lc=NSClassFromString(@"VDTradeCartListDO");
-    if(!lc||![list isKindOfClass:lc]){WDGCartClear();gReason=@"购物车响应模型类型未验证";return;}
+    if(!lc||![list isKindOfClass:lc]){WGCEmptySnapshot();gReason=@"购物车响应模型类型未验证";return NO;}
     NSArray *shops=WGCArray(list,@"shops",40);
-    if(!shops){WDGCartClear();gReason=@"购物车 shops 缺失或超过采集上限";return;}
+    if(!shops){WGCEmptySnapshot();gReason=@"购物车 shops 缺失或超过采集上限";return NO;}
     NSMutableArray *rows=[NSMutableArray array];NSMutableDictionary *raws=[NSMutableDictionary dictionary];
+    NSMutableDictionary *states=[NSMutableDictionary dictionary];
     BOOL invalid=NO;
     for(id shop in shops) {
         NSString *shopID=WGCString(shop,@"shopId")?:@"";
@@ -84,73 +111,145 @@ static void WGCCollect(id list,id controller) {
                 NSString *qty=WGCString(item,@"count"),*cartID=WGCString(item,@"id")?:@"";
                 NSString *actualShop=WGCString(item,@"shopId");if(!actualShop.length)actualShop=shopID;
                 if(!itemID.length||!WGCQuantity(qty)){invalid=YES;continue;}
-                NSString *key=WGCRef(@[cartID,actualShop?:@"",itemID,skuID]);
-                if(!key||raws[key]){invalid=YES;continue;}
-                NSMutableDictionary *raw=[@{@"itemId":itemID,@"skuId":skuID,@"shopId":actualShop?:@"",@"count":qty,@"cartId":cartID} mutableCopy];
+                NSArray *identity=@[cartID,actualShop?:@"",itemID,skuID];
+                if(states[identity]){invalid=YES;continue;}
+                NSNumber *selected=WGCBool(item,@"isSelected"),*canOrder=WGCBool(item,@"canOrder"),*hasSku=WGCBool(item,@"hasSku");
                 NSNumber *priceType=WGCInt(item,@"priceType"),*payType=WGCInt(item,@"payType");
-                if(priceType)raw[@"priceType"]=priceType;
-                if(payType)raw[@"payType"]=payType;
-                NSMutableDictionary *row=[@{@"lineKey":key,@"itemRef":WGCRef(@[itemID])?:@"",@"skuRef":WGCRef(@[skuID])?:@"",@"shopRef":WGCRef(@[actualShop?:@""])?:@"",@"quantity":qty,@"title":WGCTitle(WGCString(item,@"itemName")),@"skuTitle":WGCTitle(WGCString(item,@"skuName"))} mutableCopy];
-                for(NSString *flag in @[@"isSelected",@"canOrder",@"hasSku"]) {
-                    NSNumber *b=WGCBool(item,flag);if(b){row[[flag isEqual:@"isSelected"]?@"selected":flag]=b;raw[flag]=b;}
-                }
                 NSString *price=WGCString(item,@"price"),*available=WGCString(item,@"available_date");
-                if(price){row[@"price"]=price;raw[@"price"]=price;}if(available)row[@"availableDate"]=WGCTitle(available);
-                raws[key]=[raw copy];[rows addObject:[row copy]];
+                NSString *title=WGCTitle(WGCString(item,@"itemName")),*skuTitle=WGCTitle(WGCString(item,@"skuName"));
+                // Compare cheap native values first. Stable polls reuse immutable
+                // rows/raw data and never serialize or HMAC the complete cart.
+                NSArray *values=@[qty,selected?:NSNull.null,canOrder?:NSNull.null,hasSku?:NSNull.null,priceType?:NSNull.null,payType?:NSNull.null,price?:NSNull.null,available?:NSNull.null,title,skuTitle];
+                WGCLineState *state=gLineStates[identity];
+                if(!state||![state.values isEqual:values]) {
+                    NSString *key=state.row[@"lineKey"]?:WGCRef(identity);
+                    if(!key){invalid=YES;continue;}
+                    NSMutableDictionary *raw=[@{@"itemId":itemID,@"skuId":skuID,@"shopId":actualShop?:@"",@"count":qty,@"cartId":cartID} mutableCopy];
+                    if(priceType)raw[@"priceType"]=priceType;if(payType)raw[@"payType"]=payType;
+                    NSMutableDictionary *row=state? [state.row mutableCopy]:[@{@"lineKey":key,@"itemRef":WGCRef(@[itemID])?:@"",@"skuRef":WGCRef(@[skuID])?:@"",@"shopRef":WGCRef(@[actualShop?:@""])?:@""} mutableCopy];
+                    row[@"quantity"]=qty;row[@"title"]=title;row[@"skuTitle"]=skuTitle;
+                    NSArray *flags=@[@"isSelected",@"canOrder",@"hasSku"];
+                    NSArray *flagValues=@[selected?:NSNull.null,canOrder?:NSNull.null,hasSku?:NSNull.null];
+                    for(NSUInteger i=0;i<flags.count;i++) {
+                        NSString *flag=flags[i],*rowFlag=i==0?@"selected":flag;id value=flagValues[i];
+                        if(value!=NSNull.null){row[rowFlag]=value;raw[flag]=value;}else [row removeObjectForKey:rowFlag];
+                    }
+                    if(price){row[@"price"]=price;raw[@"price"]=price;}else [row removeObjectForKey:@"price"];
+                    if(available)row[@"availableDate"]=WGCTitle(available);else [row removeObjectForKey:@"availableDate"];
+                    state=[WGCLineState new];state.values=values;state.row=row;state.raw=raw;gRowBuilds++;
+                }
+                state.nativeItem=item;states[identity]=state;
+                raws[state.row[@"lineKey"]]=state.raw;[rows addObject:state.row];
             }
         }
     }
-    gCandidates=[rows copy];gRaw=[raws copy];gCaptures++;
-    if(gChosenLine&&!gRaw[gChosenLine])gChosenLine=nil;
+    if(![gCandidates isEqual:rows])gCandidates=[rows copy];
+    if(![gRaw isEqual:raws])gRaw=[raws copy];
+    gLineStates=[states copy];
+    // A vanished manual target stays manual/empty instead of silently following
+    // a different checked row. Explicit ChooseLine(nil) restores follow mode.
     gReason=invalid?@"存在未完整解析的购物车行，本轮暂停自动设置":nil;
-    // Only preserve fields already present in the App's routing context.
-    // Missing address/channel is never invented or read from OS account stores.
     id request=WGCGet(controller,@"request");id params=WGCGet(request,@"queryParams");
     NSMutableDictionary *context=[NSMutableDictionary dictionary];
     if([params isKindOfClass:NSDictionary.class])for(NSString *k in @[@"address_id",@"source_id",@"wfr",@"channel",@"express_type"]) {
         id value=params[k];if([value isKindOfClass:NSString.class]&&[value length]<=512)context[k]=[value copy];
     }
-    gRouteContext=[context copy];
+    if(![gRouteContext isEqual:context])gRouteContext=[context copy];
+    return YES;
+}
+static id WGCControllerList(id controller,BOOL *hasGetter) {
+    Class lc=NSClassFromString(@"VDTradeCartListDO");
+    id vm=WGCGet(controller,@"viewModel");
+    NSArray *owners=controller?(vm?@[controller,vm]:@[controller]):@[];
+    for(id owner in owners)for(NSString *name in @[@"currentcartListDO",@"cartListDO",@"listDO"]) {
+        SEL sel=NSSelectorFromString(name);
+        if(!WGCTyped(class_getInstanceMethod(object_getClass(owner),sel),2,'@'))continue;
+        *hasGetter=YES;id list=WGCGet(owner,name);
+        if(lc&&[list isKindOfClass:lc]){gLiveSource=[NSString stringWithFormat:@"%@.%@",owner==controller?@"controller":@"viewModel",name];return list;}
+    }
+    return nil;
+}
+static void WGCSyncLive(void) {
+    if(gAwaitingNativeCallback||gSyncing)return;
+    if(!NSThread.isMainThread){dispatch_sync(dispatch_get_main_queue(),^{WGCSyncLive();});return;}
+    gSyncing=YES;
+    @try {
+        id controller=gLiveController;BOOL hasGetter=NO;
+        id list=WGCControllerList(controller,&hasGetter);
+        if(!list&&!hasGetter){list=gLiveList;if(list)gLiveSource=@"callback_weak_model";}
+        if(list){gLiveList=list;gLiveReads++;WGCCollect(list,controller);}
+        else if(gCandidates.count){WGCEmptySnapshot();gReason=@"原生购物车模型已释放或当前 getter 为空，等待有效模型";}
+    } @finally {gSyncing=NO;}
 }
 static void WGCObserveFetch(id receiver,SEL command,BOOL success,id cartList) {
     if(gOriginalFetch)gOriginalFetch(receiver,command,success,cartList);
     if(!success||!cartList)return;
-    if(NSThread.isMainThread)WGCCollect(cartList,receiver);
-    else dispatch_async(dispatch_get_main_queue(),^{WGCCollect(cartList,receiver);});
+    NSUInteger epoch=gClearEpoch;
+    void (^capture)(void)=^{
+        if(epoch!=gClearEpoch)return;
+        Class lc=NSClassFromString(@"VDTradeCartListDO");
+        if(!lc||![cartList isKindOfClass:lc])return;
+        gLiveController=receiver;gLiveList=cartList;
+        // Clear remains latched until a subsequent valid native callback.
+        // A malformed payload must not unlock it.
+        if(!WGCArray(cartList,@"shops",40)) {
+            if(!gAwaitingNativeCallback)WGCCollect(cartList,receiver);
+            return;
+        }
+        gAwaitingNativeCallback=NO;gCaptures++;gLiveSource=@"native_fetch_callback";
+        WGCCollect(cartList,receiver);
+    };
+    if(NSThread.isMainThread)capture();else dispatch_async(dispatch_get_main_queue(),capture);
+}
+static void WGCObserveWillAppear(id receiver,SEL command,BOOL animated) {
+    if(gOriginalWillAppear)gOriginalWillAppear(receiver,command,animated);
+    gLiveController=receiver;WGCSyncLive();
+}
+static BOOL WGCBoolArgument(Method m,unsigned index) {
+    char a[256]={0};if(m)method_getArgumentType(m,index,a,sizeof(a));const char *t=WGCType(a);
+    return (t[0]=='B'||t[0]=='c')&&!t[1];
 }
 void WDGCartInstallObservers(void) {
     if(gInstalled)return;
     Class cls=NSClassFromString(@"VDTradeMyCartViewController");SEL s=NSSelectorFromString(@"fetchDataSucceed:cartListDO:");
     Method m=cls?class_getInstanceMethod(cls,s):NULL;
-    char a[256]={0},b[256]={0};if(m){method_getArgumentType(m,2,a,sizeof(a));method_getArgumentType(m,3,b,sizeof(b));}
-    const char *t=WGCType(a);
-    if(!WGCTyped(m,4,'v')||!((t[0]=='B'||t[0]=='c')&&!t[1])||!WGCObject(b)){gReason=@"购物车回调 BOOL/object ABI 未匹配";return;}
+    char b[256]={0};if(m)method_getArgumentType(m,3,b,sizeof(b));
+    if(!WGCTyped(m,4,'v')||!WGCBoolArgument(m,2)||!WGCObject(b)){gReason=@"购物车回调 BOOL/object ABI 未匹配";return;}
     gOriginalFetch=(void(*)(id,SEL,BOOL,id))method_getImplementation(m);
     method_setImplementation(m,(IMP)WGCObserveFetch);gInstalled=YES;
+    SEL appear=NSSelectorFromString(@"viewWillAppear:");Method am=class_getInstanceMethod(cls,appear);
+    if(WGCTyped(am,3,'v')&&WGCBoolArgument(am,2)) {
+        gOriginalWillAppear=(void(*)(id,SEL,BOOL))method_getImplementation(am);
+        // Add an override if inherited: never replace the base Controller's IMP.
+        if(!class_addMethod(cls,appear,(IMP)WGCObserveWillAppear,method_getTypeEncoding(am)))method_setImplementation(am,(IMP)WGCObserveWillAppear);
+    }
 }
-NSArray<NSDictionary *> *WDGCartCandidates(void){return gCandidates?:@[];}
+NSArray<NSDictionary *> *WDGCartCandidates(void){WGCSyncLive();return gCandidates?:@[];}
 NSArray<NSDictionary *> *WDGCartSelectedLines(void) {
-    NSMutableArray *picked=[NSMutableArray array];
+    WGCSyncLive();NSMutableArray *picked=[NSMutableArray array];
     for(NSDictionary *r in gCandidates?:@[])if(gChosenLine?[r[@"lineKey"] isEqual:gChosenLine]:[r[@"selected"] boolValue])[picked addObject:r];
     return [picked copy];
 }
 NSString *WDGCartSnapshotKey(void) {
-    NSArray *picked=WDGCartSelectedLines();if(!picked.count)return nil;
+    NSArray *picked=WDGCartSelectedLines();
+    if(!picked.count){gKeyIdentity=nil;gSnapshot=nil;return nil;}
+    picked=[picked sortedArrayUsingComparator:^NSComparisonResult(NSDictionary *a,NSDictionary *b){return [a[@"lineKey"] compare:b[@"lineKey"]];}];
     NSMutableArray *identity=[NSMutableArray array];
     for(NSDictionary *line in picked){NSDictionary *raw=gRaw[line[@"lineKey"]];if(!raw)return nil;[identity addObject:raw];}
-    [identity sortUsingComparator:^NSComparisonResult(NSDictionary *a,NSDictionary *b){return [[a[@"itemId"] stringByAppendingString:a[@"skuId"]] compare:[b[@"itemId"] stringByAppendingString:b[@"skuId"]]];}];
-    return WGCRef(identity);
+    if(![gKeyIdentity isEqual:identity]){gKeyIdentity=[identity copy];gSnapshot=WGCRef(identity);gSnapshotHashes++;}
+    return gSnapshot;
 }
 BOOL WDGCartChooseLine(NSString *lineKey) {
-    if(lineKey&&!gRaw[lineKey])return NO;gChosenLine=[lineKey copy];return YES;
+    WGCSyncLive();if(lineKey&&!gRaw[lineKey])return NO;gChosenLine=[lineKey copy];return YES;
 }
-void WDGCartClear(void){gCandidates=@[];gRaw=@{};gRouteContext=@{};gChosenLine=nil;gReason=nil;}
-NSDictionary *WDGCartRawLine(NSString *lineKey){return lineKey?gRaw[lineKey]:nil;}
+void WDGCartClear(void){gClearEpoch++;WGCEmptySnapshot();gLiveList=nil;gAwaitingNativeCallback=YES;gChosenLine=nil;gReason=nil;gLiveSource=@"cleared_waiting_native_callback";}
+NSDictionary *WDGCartRawLine(NSString *lineKey){WGCSyncLive();return lineKey?gRaw[lineKey]:nil;}
 NSArray<NSDictionary *> *WDGCartCopyRawSelection(void) {
     NSMutableArray *a=[NSMutableArray array];for(NSDictionary *r in WDGCartSelectedLines()){NSDictionary *raw=gRaw[r[@"lineKey"]];if(!raw)return @[];[a addObject:[raw copy]];}return [a copy];
 }
 id WDGCartBuildRequest(NSError **error) {
 #define WGC_FAIL(c,msg) do{if(error)*error=[NSError errorWithDomain:@"WeidianGrab.Cart" code:c userInfo:@{NSLocalizedDescriptionKey:msg}];return nil;}while(0)
+    WGCSyncLive();
     if(gReason.length)WGC_FAIL(1,gReason);
     NSArray *selected=WDGCartCopyRawSelection();if(!selected.count)WGC_FAIL(2,@"请选择具体购物车商品，助手不会自动全选");
     Class rc=NSClassFromString(@"VDTradeConfirmOrderRequestDO"),ic=NSClassFromString(@"VDTradeConfOrderRequestItemDO");
@@ -191,4 +290,9 @@ id WDGCartBuildRequest(NSError **error) {
     } @catch(__unused NSException *exception) { WGC_FAIL(14,@"原生纯解析请求异常"); }
 #undef WGC_FAIL
 }
-NSDictionary *WDGCartDiagnostics(void){return @{@"installed":@(gInstalled),@"captures":@(gCaptures),@"candidateCount":@(gCandidates.count),@"lineCount":@(WDGCartSelectedLines().count),@"key":WDGCartSnapshotKey()?:@"",@"reason":gReason?:@"",@"selectionSource":gChosenLine?@"assistant_explicit":@"app_checked"};}
+NSDictionary *WDGCartDiagnostics(void) {
+    NSArray *selected=WDGCartSelectedLines();NSString *key=WDGCartSnapshotKey();
+    BOOL manualMissing=gChosenLine&&!gRaw[gChosenLine];
+    NSString *selectionReason=gAwaitingNativeCallback?@"采集已清空，等待下一次有效原生回调":manualMissing?@"手动指定行已消失，请重新指定或恢复跟随购物车":gChosenLine?@"助手手动指定，覆盖原生勾选":selected.count?@"实时跟随原生购物车勾选":@"原生购物车当前未勾选商品";
+    return @{@"installed":@(gInstalled),@"captures":@(gCaptures),@"candidateCount":@(gCandidates.count),@"lineCount":@(selected.count),@"key":key?:@"",@"reason":gReason?:@"",@"selectionSource":gChosenLine?@"assistant_explicit":@"app_checked",@"selectionReason":selectionReason,@"manualLineAvailable":@(!gChosenLine||!manualMissing),@"awaitingNativeCallback":@(gAwaitingNativeCallback),@"liveControllerAlive":@(gLiveController!=nil),@"liveModelAlive":@(gLiveList!=nil),@"liveSource":gLiveSource?:@"none",@"liveReads":@(gLiveReads),@"rowBuilds":@(gRowBuilds),@"snapshotHashes":@(gSnapshotHashes)};
+}

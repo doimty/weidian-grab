@@ -9,6 +9,7 @@ typedef void (^WDGOrderReply)(NSDictionary *receipt);
 @property (nonatomic, readonly) NSString *sampleKey;
 @property (nonatomic, readonly, nullable) NSNumber *payType;
 + (BOOL)runtimeReady:(NSString * _Nullable * _Nullable)reason;
++ (BOOL)runtimeReady:(NSString * _Nullable * _Nullable)reason;
 + (BOOL)preheatReady:(NSString * _Nullable * _Nullable)reason;
 + (instancetype _Nullable)prepareRequest:(id)request
                            confirmation:(id)confirmation
@@ -25,6 +26,11 @@ typedef void (^WDGOrderReply)(NSDictionary *receipt);
 // Configured while the user confirms the cart task. A fresh confirmation is
 // required near dueAt; unknown/blocked responses never trigger CreateOrder.
 - (BOOL)configureCartDueAt:(NSDate *)dueAt maximumTotal:(NSDecimalNumber *)maximumTotal error:(NSError * _Nullable * _Nullable)error;
+// Lane racing is opt-in. 1 is the default and preserves the tested single
+// submission. 2 sends two independent CreateOrder requests for the same cart
+// template; the server may or may not de-duplicate them.
+- (BOOL)configureConcurrentLanes:(NSUInteger)lanes error:(NSError * _Nullable * _Nullable)error;
+@property (nonatomic, readonly) NSUInteger concurrentLanes;
 - (BOOL)submitTask:(NSString *)taskID completion:(WDGOrderReply)completion error:(NSError * _Nullable * _Nullable)error;
 - (BOOL)cancelBeforeCreate;
 - (void)expireUnresolvedTask:(NSString *)taskID;

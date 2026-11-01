@@ -10,7 +10,7 @@
 #import <objc/message.h>
 
 NSString * const WDGStateDidChange = @"WDGStateDidChange";
-NSString * const WDGVersion = @"0.8.2";
+NSString * const WDGVersion = @"0.9.0";
 #ifndef WDG_BUILD_ID
 #define WDG_BUILD_ID "local-unbuilt"
 #endif
@@ -33,6 +33,7 @@ static NSError *WGDError(NSInteger code, NSString *message) {
 @property (nonatomic,strong) NSTimer *replyTimeout;
 @property (nonatomic,copy) NSDictionary *lastReceipt;
 @property (nonatomic,strong) NSDecimalNumber *cartMaximum;
+@property (nonatomic) NSUInteger cartLanes;
 @property (nonatomic) BOOL cancellingTask;
 @end
 
@@ -154,10 +155,14 @@ static NSError *WGDError(NSInteger code, NSString *message) {
     [self recordEvent:@"snapshot_cleared" details:@{}];
 }
 - (BOOL)armCartAt:(NSDate *)date maximumTotal:(NSDecimalNumber *)maximumTotal error:(NSError **)error {
+    return [self armCartAt:date maximumTotal:maximumTotal concurrentLanes:1 error:error];
+}
+- (BOOL)armCartAt:(NSDate *)date maximumTotal:(NSDecimalNumber *)maximumTotal concurrentLanes:(NSUInteger)lanes error:(NSError **)error {
     if(!NSThread.isMainThread){if(error)*error=WGDError(1,@"请在主线程设置任务");return NO;}
-    self.cartMaximum=maximumTotal;
+    if(lanes!=1&&lanes!=2){if(error)*error=WGDError(30,@"并发只支持单路或双路竞速");return NO;}
+    self.cartMaximum=maximumTotal;self.cartLanes=lanes;
     BOOL armed=[self armAt:date action:@"preheatOnce" payType:nil error:error];
-    self.cartMaximum=nil;return armed;
+    self.cartMaximum=nil;self.cartLanes=1;return armed;
 }
 - (BOOL)armAt:(NSDate *)date action:(NSString *)action payType:(NSNumber *)payType error:(NSError **)error {
     if(!NSThread.isMainThread){if(error)*error=WGDError(1,@"请在主线程设置任务");return NO;}
@@ -197,7 +202,9 @@ static NSError *WGDError(NSInteger code, NSString *message) {
         if(!prepared)return NO;
     } else if(cartTask){
         prepared=[self preparePreheatWithPayType:nil error:error];
-        if(!prepared||![prepared.sampleKey isEqual:sampleKey]||![prepared configureCartDueAt:date maximumTotal:maximum error:error]){
+        if(!prepared||![prepared.sampleKey isEqual:sampleKey]||
+           ![prepared configureConcurrentLanes:self.cartLanes error:error]||
+           ![prepared configureCartDueAt:date maximumTotal:maximum error:error]){
             if(prepared&&![prepared.sampleKey isEqual:sampleKey]&&error)*error=WGDError(21,@"准备期间购物车目标已变化，请重新确认");
             return NO;
         }
@@ -208,7 +215,7 @@ static NSError *WGDError(NSInteger code, NSString *message) {
     self.preparedService=prepared;self.lastReceipt=nil;
     NSTimeInterval fireAt=cartTask?MAX(NSDate.date.timeIntervalSince1970,date.timeIntervalSince1970-5):date.timeIntervalSince1970;
     self.task=[@{@"id":NSUUID.UUID.UUIDString,@"state":@"armed",@"action":action,@"sampleKey":sampleKey?:@"",@"payType":cartTask?NSNull.null:(payType?:NSNull.null),@"dueAt":@(date.timeIntervalSince1970),@"fireAt":@(fireAt),@"armedAt":@(NSDate.date.timeIntervalSince1970)} mutableCopy];
-    if(cartTask)self.task[@"maximumTotal"]=maximum.stringValue;
+    if(cartTask){self.task[@"maximumTotal"]=maximum.stringValue;self.task[@"concurrentLanes"]=@(self.cartLanes);}
     WDGTaskGateArm(&_taskGate,fireAt);
     self.timer=[NSTimer timerWithTimeInterval:0.1 target:self selector:@selector(tick:) userInfo:nil repeats:YES];
     [[NSRunLoop mainRunLoop] addTimer:self.timer forMode:NSRunLoopCommonModes];

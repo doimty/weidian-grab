@@ -6,7 +6,7 @@
 #import <errno.h>
 
 NSString * const WDGStateDidChange = @"WDGStateDidChange";
-NSString * const WDGVersion = @"0.5.1";
+NSString * const WDGVersion = @"0.5.2";
 #ifndef WDG_BUILD_ID
 #define WDG_BUILD_ID "local-unbuilt"
 #endif

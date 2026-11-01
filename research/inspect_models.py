@@ -25,6 +25,9 @@ ObjC.schedule(ObjC.mainQueue,function(){
  const result={controller:name(target),vm:name(vm),request:name(request),confirmation:name(confirm),requestItemCount:requests.length,requestItemClasses:[...new Set(requests.map(name))],shopCount:shops.length,shopClasses:[...new Set(shops.map(name))],confirmedItemCount:items.length,confirmedItemClasses:[...new Set(items.map(name))],sameTupleList:JSON.stringify(left)===JSON.stringify(right),hasTotalPrice:!!get(confirm,'total_pay_price'),payOptionCount:arr(get(confirm,'pay_options')).length};
  function modelSummary(o){const ss=arr(get(o,'shop_list'));return {class:name(o),shopCount:ss.length,itemCount:ss.reduce((n,s)=>n+arr(get(s,'item_list')).length,0),hasTotalPrice:!!get(o,'total_pay_price'),payOptionCount:arr(get(o,'pay_options')).length};}
  result.modelSources={vmConfirm:modelSummary(confirm),vmPreConfirm:modelSummary(get(vm,'preConfirmOrderDO')),viewConfirm:modelSummary(get(get(target,'orderView'),'confirmOrderDO')),viewModelFromView:name(get(get(target,'orderView'),'viewModel'))};
+ result.rowFlags=items.map(i=>({class:name(i),selected:get(i,'is_select'),valid:get(i,'is_valid'),quantityClass:name(get(i,'quantity')),idClass:name(get(i,'item_id')),skuClass:name(get(i,'item_sku_id'))}));
+ result.optionFlags=arr(get(confirm,'pay_options')).map(o=>({class:name(o),selected:get(o,'selected'),available:get(o,'available'),buttons:arr(get(o,'buttons')).map(b=>({class:name(b),type:get(b,'type'),hasName:!!get(b,'name')}))}));
+ result.cannotSubmit=get(confirm,'cannot_submit');
  send(result);
 });
 '''

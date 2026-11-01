@@ -243,8 +243,9 @@ static NSString *WDGSelectionKey(NSDictionary *row) {
 static NSArray<NSString *> *WDGSelectionKeys(NSArray<NSDictionary *> *rows) {
     NSMutableArray *keys = [NSMutableArray array];
     for (NSDictionary *row in rows) {
-        NSNumber *selected = row[@"selected"];
-        if (selected && !selected.boolValue) continue;
+        // Confirmation-row is_select is false even for the sole submitted item
+        // on 7.9.62. Compare the actual request/confirmation lists, not that
+        // undocumented UI flag. The whole-list equality still rejects extras.
         NSString *key = WDGSelectionKey(row);
         if (key) [keys addObject:key];
     }
@@ -375,13 +376,9 @@ static WDGObserverBuild *WDGBuild(id viewModel, id page, NSString *kind) {
         else if (blocked.boolValue) reason = @"页面当前禁止提交";
         else if (!total.length) reason = @"确认总价尚未完整";
         else if (!optionsComplete) reason = optionsReason ?: @"当前付款按钮模型或 ABI 尚未完整";
-        for (NSDictionary *row in confirmationRows) {
-            NSNumber *valid = row[@"valid"], *selected = row[@"selected"];
-            if ((!selected || selected.boolValue) && valid && !valid.boolValue) {
-                reason = @"所选商品存在失效状态";
-                break;
-            }
-        }
+        // is_valid/is_select on confirmation rows are diagnostic-only: both
+        // are default false on a live valid confirmation page in this version.
+        // Root cannot_submit, exact list equality and native UI keep authority.
         if ([kind isEqualToString:@"quick"] && !WDGQuickSelectionMatches(page, requestKeys))
             reason = @"快捷页当前 SKU 与 ViewModel 请求尚未匹配";
     }

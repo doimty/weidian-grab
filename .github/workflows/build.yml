@@ -17,7 +17,7 @@ jobs:
     runs-on: macos-14
     timeout-minutes: 30
     env:
-      THEOS: ${{ runner.temp }}/weidian-grab-theos
+      THEOS: ${{ github.workspace }}/.ci-theos
       THEOS_PACKAGE_SCHEME: roothide
       FINALPACKAGE: '1'
       HOMEBREW_NO_AUTO_UPDATE: '1'

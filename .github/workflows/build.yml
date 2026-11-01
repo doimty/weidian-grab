@@ -15,7 +15,7 @@ jobs:
 
       - name: Install Theos
         run: |
-          git clone --recursive --depth 1 https://github.com/theos/theos.git "$THEOS"
+          git clone --recursive --depth 1 https://github.com/roothide/theos.git "$THEOS"
           mkdir -p "$THEOS/sdks"
           SDK="$(xcrun --sdk iphoneos --show-sdk-path)"
           echo "iPhoneOS SDK: $SDK"
@@ -34,19 +34,14 @@ jobs:
           find . -name "*.deb" -newermt "-10 minutes" | tee /tmp/debs.txt
           test -s /tmp/debs.txt
 
-      - name: Retarget package to iphoneos-arm64e
+      - name: Inspect package
         run: |
           set -e
           DEB="$(find . -name '*.deb' -newermt '-10 minutes' | head -1)"
-          echo "source: $DEB"
-          rm -rf pkgroot out && mkdir -p out
-          dpkg-deb -R "$DEB" pkgroot
-          sed -i '' 's/^Architecture:.*/Architecture: iphoneos-arm64e/' pkgroot/DEBIAN/control
-          sed -i '' 's/^Depends:.*/Depends: firmware (>= 15.0), roothide/' pkgroot/DEBIAN/control
-          cat pkgroot/DEBIAN/control
-          OUT="com.koudai.weidian.grab_0.3.0_iphoneos-arm64e.deb"
-          dpkg-deb -b pkgroot "out/$OUT"
-          dpkg-deb -c "out/$OUT"
+          echo "deb: $DEB"
+          dpkg-deb -I "$DEB"
+          dpkg-deb -c "$DEB"
+          mkdir -p out && cp "$DEB" out/
       - uses: actions/upload-artifact@v4
         with:
           name: weidian-grab-deb

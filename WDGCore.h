@@ -23,6 +23,7 @@ FOUNDATION_EXPORT NSString * const WDGBuildID;
 // Native adapter: introspection/observation only at startup. Actions only when
 // explicitly armed by the user in the panel; no arbitrary HTTP replay.
 FOUNDATION_EXPORT void WDGInstallTradeObservers(void);
+FOUNDATION_EXPORT void WDGRefreshTradeSnapshot(void);
 FOUNDATION_EXPORT NSDictionary *WDGObserverDiagnostics(void);
 FOUNDATION_EXPORT BOOL WDGNativeTargetReady(NSString * _Nullable sampleKey, NSNumber * _Nullable payType, NSString * _Nullable * _Nullable reason);
 FOUNDATION_EXPORT BOOL WDGExecuteNativeOnce(NSString * _Nullable sampleKey, NSNumber * _Nullable payType, NSError * _Nullable * _Nullable error);

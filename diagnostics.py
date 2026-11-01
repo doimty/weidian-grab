@@ -39,6 +39,15 @@ for (const cname in targets) {
 result.tweakModules=Process.enumerateModules().filter(m=>/WeidianGrab|AutoPatches|libjoker/i.test(m.name)).map(m=>({name:m.name,path:m.path}));
 const hd=api('NSHomeDirectory');
 try {if(hd)result.home=new ObjC.Object(new NativeFunction(hd,'pointer',[])()).toString();}catch(e){result.homeError=String(e);}
+const obs=Module.findExportByName(null,'WDGObserverDiagnostics');
+if(obs){
+ try{
+  const value=new ObjC.Object(new NativeFunction(obs,'pointer',[])());
+  const data=ObjC.classes.NSJSONSerialization.dataWithJSONObject_options_error_(value,0,ptr(0));
+  const text=ObjC.classes.NSString.alloc().initWithData_encoding_(data,4).toString();
+  result.observer=JSON.parse(text);
+ }catch(e){result.observerError=String(e);}
+}
 send({kind:'metadata',data:result});
 '''
 

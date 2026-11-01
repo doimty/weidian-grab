@@ -6,7 +6,7 @@
 #import <errno.h>
 
 NSString * const WDGStateDidChange = @"WDGStateDidChange";
-NSString * const WDGVersion = @"0.5.0";
+NSString * const WDGVersion = @"0.5.1";
 #ifndef WDG_BUILD_ID
 #define WDG_BUILD_ID "local-unbuilt"
 #endif
@@ -122,6 +122,7 @@ static NSError *WGDError(NSInteger code, NSString *message) {
     if(!NSThread.isMainThread){dispatch_async(dispatch_get_main_queue(), ^{[self setCaptureEnabled:enabled];});return;}
     _captureEnabled=enabled;
     [self recordEvent:@"capture_toggle" details:@{@"captureEnabled":@(enabled)}];
+    if(enabled) WDGRefreshTradeSnapshot();
 }
 - (void)acceptSnapshot:(NSDictionary *)snapshot {
     if(!NSThread.isMainThread){dispatch_async(dispatch_get_main_queue(), ^{[self acceptSnapshot:snapshot];});return;}

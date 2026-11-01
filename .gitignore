@@ -8,7 +8,7 @@ __pycache__/
 capture*.log
 weidian-objc.txt
 research/compile-check/
-research/runtime-metadata.json
+research/runtime-*.json
 manifest.json
 toolchain.json
 build.log

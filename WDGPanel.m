@@ -88,6 +88,7 @@
 - (void)togglePanel {if(self.card&&!self.card.hidden)[self closePanel];else [self openPanel];}
 - (void)openPanel {
     [self ensureWindow];if(!self.window)return;
+    WDGRefreshTradeSnapshot();
     for (UIScene *scene in UIApplication.sharedApplication.connectedScenes) {
         if (![scene isKindOfClass:UIWindowScene.class]) continue;
         for (UIWindow *w in ((UIWindowScene *)scene).windows) if(w.isKeyWindow&&w!=self.window) self.previousKey=w;

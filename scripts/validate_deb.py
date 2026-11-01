@@ -2,7 +2,7 @@
 """Validate a RootHide WeidianGrab deb without extracting or executing it.
 
 Usage:
-  python3 scripts/validate_deb.py packages/com.koudai.weidian.grab_0.5.0_iphoneos-arm64e.deb --output manifest.json
+  python3 scripts/validate_deb.py packages/com.koudai.weidian.grab_0.5.1_iphoneos-arm64e.deb --output manifest.json
   python3 scripts/validate_deb.py dist7/com.koudai.weidian.grab_0.4.2_iphoneos-arm64e.deb --version 0.4.2
 
 Only the Python standard library is required. All archive contents stay in memory.
@@ -353,7 +353,7 @@ def script_record(name: str, info: tarfile.TarInfo, data: bytes, warnings: list[
     return {"mode": f"{info.mode & 0o7777:04o}", "sha256": sha256(data), "bytes": len(data), "line_endings": "LF", "final_lf": data.endswith(b"\n")}
 
 
-def validate_package(data: bytes, version: str = "0.5.0", expected_sdk: str | None = None) -> dict:
+def validate_package(data: bytes, version: str = "0.5.1", expected_sdk: str | None = None) -> dict:
     warnings: list[str] = []
     require(re.fullmatch(r"[A-Za-z0-9.+:~_-]+", version), "invalid expected package version")
     ar = read_ar(data)
@@ -406,7 +406,7 @@ def validate_package(data: bytes, version: str = "0.5.0", expected_sdk: str | No
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("deb", type=Path)
-    parser.add_argument("--version", default="0.5.0", help="exact expected Debian Version (default: 0.5.0)")
+    parser.add_argument("--version", default="0.5.1", help="exact expected Debian Version (default: 0.5.1)")
     parser.add_argument("--expected-sdk", help="optional actual Mach-O SDK version; not the SDK directory label")
     parser.add_argument("--toolchain", type=Path, help="CI toolchain evidence JSON to embed in the manifest")
     parser.add_argument("--output", type=Path, help="also save the JSON manifest; stdout always receives JSON")

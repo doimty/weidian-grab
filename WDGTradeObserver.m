@@ -493,9 +493,11 @@ static void WDGPublish(WDGObserverCandidate *candidate, id page) {
         !WDGMatchesPage(page, viewModel, candidate.pageKind)) return;
     WDGObserverBuild *build = WDGBuild(viewModel, page, candidate.pageKind);
     if (!build.fingerprint) return;
-    BOOL changed = ![candidate.fingerprint isEqualToString:build.fingerprint] || candidate.boundPage != page ||
+    BOOL changed = WDGPublishedCandidate != candidate ||
+        ![candidate.fingerprint isEqualToString:build.fingerprint] || candidate.boundPage != page ||
         candidate.publishedRequest != build.requestModel || candidate.publishedConfirmation != build.confirmationModel;
-    if (changed || !candidate.sampleKey.length) {
+    BOOL shouldPublish = changed || !candidate.sampleKey.length;
+    if (shouldPublish) {
         candidate.sampleKey = [NSUUID UUID].UUIDString;
         candidate.capturedAt = [NSDate date].timeIntervalSince1970;
         candidate.capturedUptime = [NSProcessInfo processInfo].systemUptime;
@@ -512,7 +514,9 @@ static void WDGPublish(WDGObserverCandidate *candidate, id page) {
     snapshot[@"capturedAt"] = @(candidate.capturedAt);
     candidate.snapshot = [snapshot copy];
     WDGPublishedCandidate = candidate;
-    [[WDGCore shared] acceptSnapshot:candidate.snapshot];
+    WDGCore *core=[WDGCore shared];
+    NSString *acceptedKey=core.status[@"snapshot"][@"sampleKey"];
+    if (shouldPublish || ![acceptedKey isEqualToString:candidate.sampleKey]) [core acceptSnapshot:candidate.snapshot];
 }
 
 static void WDGObserveVM(id viewModel, id model, BOOL isConfirmation, NSString *kind) {
@@ -542,9 +546,8 @@ static void WDGObserveVM(id viewModel, id model, BOOL isConfirmation, NSString *
 static void WDGObservePage(id page, NSString *kind) {
     WDGEnsureState();
     if ([kind isEqualToString:@"quick"]) {
-        WDGQuickView = page;
-        WDGQuickHostController = WDGTopController(((UIView *)page).window);
-    } else WDGOrdinaryController = page;
+        if (page != WDGQuickView) return;
+    } else if (page != WDGOrdinaryController) return;
     id viewModel = WDGReadObject(page, @"viewModel");
     if (!WDGMatchesPage(page, viewModel, kind)) return;
     WDGObservationCount++;
@@ -566,11 +569,36 @@ static void WDGQueueVM(id self, id model, BOOL confirmation, NSString *kind) {
     });
 }
 
-static void WDGQueuePage(id self, NSString *kind) {
+static void WDGQueuePage(id self, NSString *kind, BOOL bindPage) {
     __weak id weakPage = self;
     dispatch_async(dispatch_get_main_queue(), ^{
-        @try { id page = weakPage; if (page) WDGObservePage(page, kind); }
-        @catch (__unused NSException *exception) { WDGLastObservation = @"observation.exception"; }
+        @try {
+            id page = weakPage;
+            if (!page) return;
+            if (bindPage) {
+                if ([kind isEqualToString:@"quick"]) {
+                    WDGQuickView = page;
+                    WDGQuickHostController = WDGTopController(((UIView *)page).window);
+                } else WDGOrdinaryController = page;
+            }
+            WDGObservePage(page, kind);
+        } @catch (__unused NSException *exception) { WDGLastObservation = @"observation.exception"; }
+    });
+}
+
+void WDGRefreshTradeSnapshot(void) {
+    WDGOnMainSync(^{
+        WDGEnsureState();
+        if (!WDGInstalled || [UIApplication sharedApplication].applicationState != UIApplicationStateActive) return;
+        @try {
+            id quick = WDGQuickView;
+            if (quick && WDGPageVisible(quick, @"quick")) {
+                WDGObservePage(quick, @"quick");
+                return;
+            }
+            id ordinary = WDGOrdinaryController;
+            if (ordinary && WDGPageVisible(ordinary, @"confirm")) WDGObservePage(ordinary, @"confirm");
+        } @catch (__unused NSException *exception) { WDGLastObservation = @"observation.exception"; }
     });
 }
 
@@ -580,6 +608,8 @@ static void (*WDGOriginalQuickRequest)(id, SEL, id);
 static void (*WDGOriginalQuickConfirmation)(id, SEL, id);
 static void (*WDGOriginalAppear)(id, SEL, BOOL);
 static void (*WDGOriginalShow)(id, SEL);
+static void (*WDGOriginalRequestSuccess)(id, SEL);
+static void (*WDGOriginalQuickAPISuccess)(id, SEL);
 
 static void WDGHookOrdinaryRequest(id self, SEL cmd, id model) {
     WDGOriginalOrdinaryRequest(self, cmd, model); WDGQueueVM(self, model, NO, @"confirm");
@@ -594,10 +624,16 @@ static void WDGHookQuickConfirmation(id self, SEL cmd, id model) {
     WDGOriginalQuickConfirmation(self, cmd, model); WDGQueueVM(self, model, YES, @"quick");
 }
 static void WDGHookAppear(id self, SEL cmd, BOOL animated) {
-    WDGOriginalAppear(self, cmd, animated); WDGQueuePage(self, @"confirm");
+    WDGOriginalAppear(self, cmd, animated); WDGQueuePage(self, @"confirm", YES);
 }
 static void WDGHookShow(id self, SEL cmd) {
-    WDGOriginalShow(self, cmd); WDGQueuePage(self, @"quick");
+    WDGOriginalShow(self, cmd); WDGQueuePage(self, @"quick", YES);
+}
+static void WDGHookRequestSuccess(id self, SEL cmd) {
+    WDGOriginalRequestSuccess(self, cmd); WDGQueuePage(self, @"confirm", NO);
+}
+static void WDGHookQuickAPISuccess(id self, SEL cmd) {
+    WDGOriginalQuickAPISuccess(self, cmd); WDGQueuePage(self, @"quick", NO);
 }
 
 static void WDGInstallHook(NSString *className, NSString *name, char argument, IMP replacement, IMP *original) {
@@ -631,6 +667,10 @@ void WDGInstallTradeObservers(void) {
         WDGInstallHook(@"VDTradeConfOrderViewController", @"viewDidAppear:", 'B', (IMP)WDGHookAppear,
                        (IMP *)&WDGOriginalAppear);
         WDGInstallHook(@"VDTradeQuickOrderView", @"show", '\0', (IMP)WDGHookShow, (IMP *)&WDGOriginalShow);
+        WDGInstallHook(@"VDTradeConfOrderViewController", @"requestSuccess", '\0', (IMP)WDGHookRequestSuccess,
+                       (IMP *)&WDGOriginalRequestSuccess);
+        WDGInstallHook(@"VDTradeQuickOrderView", @"updateAllSubviews_apiSuccess", '\0', (IMP)WDGHookQuickAPISuccess,
+                       (IMP *)&WDGOriginalQuickAPISuccess);
     });
 }
 

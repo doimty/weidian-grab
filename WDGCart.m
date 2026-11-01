@@ -24,6 +24,7 @@ static BOOL WDGCartInstalled;
 static NSData *WDGCartSalt;
 static IMP WDGCartOriginalFetch;
 static NSMutableDictionary<NSString *, NSDictionary *> *WDGCartRawMap;
+static void (*WDGCartOriginalFetchFn)(id, SEL, BOOL, id);
 
 static const char *WDGCartUnqualified(const char *type) {
     if (!type) return "";
@@ -182,12 +183,17 @@ static void WDGCartHandleList(id cartList) {
     WDGCartLastReason = nil;
 }
 
-static void WDGCartFetchData(id self, SEL _cmd, id first, id cartList) {
-    // Original runs first; we only read the model it was handed.
-    if (WDGCartOriginalFetch) ((void (*)(id, SEL, id, id))WDGCartOriginalFetch)(self, _cmd, first, cartList);
-    id model = cartList;
-    if (!model) model = first;
-    dispatch_async(dispatch_get_main_queue(), ^{ WDGCartHandleList(model); });
+// Installed through MSHookMessageEx, so this receives the ORIGINAL IMP as its
+// first argument: replacement(self, _cmd, arg1, arg2). The previous version
+// declared a plain C function and treated `self` as the receiver, which meant
+// arg1/arg2 were off by one slot and the block pointer it retained was
+// actually a BOOL/edge value -> objc_retain(0x1) crash on arm64e.
+// The first parameter is a BOOL success flag, NOT an object. Retaining it was
+// the cart-page crash: objc_retain(0x1) came straight from a YES flag in x2.
+// The cart model is the second parameter.
+static void WDGCartFetchData(id self, SEL _cmd, BOOL succeed, id cartList) {
+    if (WDGCartOriginalFetchFn) WDGCartOriginalFetchFn(self, _cmd, succeed, cartList);
+    if (cartList) WDGCartHandleList(cartList);
 }
 
 void WDGCartInstallObservers(void) {
@@ -197,14 +203,27 @@ void WDGCartInstallObservers(void) {
     SEL sel = NSSelectorFromString(@"fetchDataSucceed:cartListDO:");
     Method m = cls ? class_getInstanceMethod(cls, sel) : NULL;
     char ret[256] = {0};
-    if (m) method_getReturnType(m, ret, sizeof(ret));
+    char a2[256] = {0}, a3[256] = {0};
+    if (m) {
+        method_getReturnType(m, ret, sizeof(ret));
+        method_getArgumentType(m, 2, a2, sizeof(a2));
+        method_getArgumentType(m, 3, a3, sizeof(a3));
+    }
     const char *t = WDGCartUnqualified(ret);
-    if (!m || method_getNumberOfArguments(m) != 4 || t[0] != 'v' || t[1]) {
+    const char *p2 = WDGCartUnqualified(a2);
+    const char *p3 = WDGCartUnqualified(a3);
+    // Verified empirically: arg2 is a BOOL success flag, arg3 is the model.
+    // Requiring both keeps a future App build with different types from
+    // crashing instead of silently mis-binding the pointer.
+    BOOL arg2IsBool = (p2[0] == 'B' || p2[0] == 'c') && p2[1] == '\0';
+    BOOL arg3IsObject = p3[0] == '@' && (p3[1] == '\0' || p3[1] == '"');
+    if (!m || method_getNumberOfArguments(m) != 4 || t[0] != 'v' || t[1] || !arg2IsBool || !arg3IsObject) {
         WDGCartLastReason = @"购物车回调 ABI 不匹配";
         return;
     }
     WDGCartOriginalFetch = method_getImplementation(m);
-    MSHookMessageEx(cls, sel, (IMP)WDGCartFetchData, &WDGCartOriginalFetch);
+    WDGCartOriginalFetchFn = (void (*)(id, SEL, BOOL, id))WDGCartOriginalFetch;
+    method_setImplementation(m, (IMP)WDGCartFetchData);
     WDGCartLastReason = nil;
 }
 

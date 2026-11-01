@@ -13,7 +13,7 @@
 #import <Foundation/Foundation.h>
 #import <objc/runtime.h>
 
-#define GRAB_LOG_PATH   @"/var/mobile/Library/Logs/WeidianGrab.log"
+#define GRAB_LOG_PATH   @"/var/mobile/weidiangrab.log"
 #define GRAB_CONF_PATH  @"/var/mobile/Library/Preferences/com.koudai.weidian.grab.json"
 
 static NSMutableDictionary *gConf = nil;

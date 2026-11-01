@@ -70,6 +70,29 @@ VDTradeConfOrderService
 
 不采集整个请求/确认对象、buyer、address、Cookie、Authorization、风险签名、路由参数或埋点字典。
 
+## 接口直提（0.6.0）
+
+机器码已证实创建订单不依赖页面点击：
+
+```text
++[VDTradeConfOrderService createOrderRequestDO:confirmOrderDO:result:]
+  IMP 0x104ccbbb8  types v40@0:8@16@24@?32
+   → WDNHttpVapInfo infoWithScope:@"vbuy" name:@"CreateOrder" version:@"1.0"
+   → WDNHttpThorHandler → WDTNNetworkManager POST
+   → WDTNThorParameterProcessor → currentServerTime + md5 签名
+   → POST https://<thorHost>/vbuy/CreateOrder/1.0
+```
+
+回调 ABI（调用方 block descriptor `0x107819be0`，签名 `v28@?0B8@12@"WDNErrorDO"20`）：
+
+```objc
+void (^)(BOOL isSuccess, id result, WDNErrorDO *error)
+```
+
+关键结论：复用该 Service 即可让 App 在发送瞬间重新取服务器时间签名，插件无需手工构造 Thor payload。但必须使用自己的回调，不转发给 `createOrderSuccess:payButtonType:`，后者会进入支付 URL 路由。
+
+未知项（不推定）：`order_id` 的字段位置与类型、独立 nonce 字段、当前活跃 host、模型有效期、SDK 内部条件性 HTTPS 重发。
+
 ## 旧判断的纠正
 
 1. 只搜 `WD` 前缀漏掉了完整的 `VDTrade*` 交易模块。不能据此断言“下单类必须懒加载后才存在”。

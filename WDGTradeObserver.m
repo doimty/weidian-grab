@@ -1,4 +1,5 @@
 #import "WDGCore.h"
+#import "WDGOrderService.h"
 #import <objc/message.h>
 #import <objc/runtime.h>
 #import <substrate.h>
@@ -697,103 +698,51 @@ static NSNumber *WDGNormalizePayType(NSNumber *value) {
     return @((NSUInteger)value.unsignedLongLongValue);
 }
 
-static BOOL WDGActionABI(id page, NSString *kind, SEL *selectorOut) {
-    SEL selector = NSSelectorFromString([kind isEqualToString:@"quick"] ? @"goToCreateOrder:" : @"createOrder:");
-    Method method = WDGInstanceMethod(page, selector, 3);
-    BOOL valid = sizeof(NSUInteger) == 8 && WDGMethodReturns(method, 'v') && WDGMethodArgument(method, 2, 'Q');
-    if (valid && selectorOut) *selectorOut = selector;
-    return valid;
-}
-
-static BOOL WDGReady(NSString *sampleKey, NSNumber *payType, NSString **reason,
-                     id *pageOut, SEL *selectorOut, NSNumber **normalizedOut) {
+static BOOL WDGInterfaceReady(NSString *sampleKey, NSNumber *payType, NSString **reason,
+                              id *requestOut, id *confirmationOut, NSNumber **normalizedOut) {
 #define WDG_NOT_READY(message) do { if (reason) *reason = (message); return NO; } while (0)
     WDGEnsureState();
     if (!WDGInstalled) WDG_NOT_READY(@"观察器尚未安装");
-    if (![sampleKey isKindOfClass:[NSString class]] || !sampleKey.length) WDG_NOT_READY(@"缺少样本标识");
-    WDGObserverCandidate *candidate = WDGPublishedCandidate;
-    if (!candidate || ![candidate.sampleKey isEqualToString:sampleKey]) WDG_NOT_READY(@"样本已变化或失效");
-    if ([UIApplication sharedApplication].applicationState != UIApplicationStateActive) WDG_NOT_READY(@"应用当前未在前台活动");
-    id page = candidate.boundPage;
-    id viewModel = candidate.viewModel;
-    if (!page || !viewModel || !WDGPageVisible(page, candidate.pageKind) ||
-        !WDGMatchesPage(page, viewModel, candidate.pageKind)) WDG_NOT_READY(@"目标页面已离开或 ViewModel 已替换");
-    if ([candidate.pageKind isEqualToString:@"confirm"] && WDGPageVisible(WDGQuickView, @"quick"))
-        WDG_NOT_READY(@"快捷页面覆盖了普通确认页");
-    NSTimeInterval age = [NSDate date].timeIntervalSince1970 - candidate.capturedAt;
-    NSTimeInterval uptimeAge = [NSProcessInfo processInfo].systemUptime - candidate.capturedUptime;
-    if (age < 0 || age > WDGMaximumSampleAge || uptimeAge < 0 || uptimeAge > WDGMaximumSampleAge)
-        WDG_NOT_READY(@"样本已超过十分钟或时钟发生变化");
-    WDGObserverBuild *live = WDGBuild(viewModel, page, candidate.pageKind);
-    if (live.requestModel != candidate.publishedRequest || live.confirmationModel != candidate.publishedConfirmation ||
-        ![live.fingerprint isEqualToString:candidate.fingerprint]) WDG_NOT_READY(@"页面商品、价格或按钮已经变化");
-    if (live.readinessReason.length) WDG_NOT_READY(live.readinessReason);
-    NSNumber *normalized = WDGNormalizePayType(payType);
-    if (!normalized || ![live.allowedPayTypes containsObject:normalized]) WDG_NOT_READY(@"请选择本样本当前可用的服务器按钮");
-    SEL selector = NULL;
-    if (!WDGActionABI(page, candidate.pageKind, &selector)) WDG_NOT_READY(@"UI 提交入口未通过 void/NSUInteger ABI 校验");
-    if (reason) *reason = nil;
-    if (pageOut) *pageOut = page;
-    if (selectorOut) *selectorOut = selector;
-    if (normalizedOut) *normalizedOut = normalized;
+    WDGObserverCandidate *candidate=WDGPublishedCandidate;
+    if (!sampleKey.length || ![candidate.sampleKey isEqualToString:sampleKey]) WDG_NOT_READY(@"缺少当前样本或样本已变化");
+    if (UIApplication.sharedApplication.applicationState!=UIApplicationStateActive) WDG_NOT_READY(@"请保持微店在前台");
+    id page=candidate.boundPage,vm=candidate.viewModel;
+    // Visible page is needed only while collecting/confirming the template.
+    // The eventual network Service invocation holds no page or controller.
+    if (!page || !vm || !WDGPageVisible(page,candidate.pageKind) || !WDGMatchesPage(page,vm,candidate.pageKind)) WDG_NOT_READY(@"请先在确认页采集完整接口参数");
+    NSTimeInterval age=NSProcessInfo.processInfo.systemUptime-candidate.capturedUptime;
+    if(age<0||age>WDGMaximumSampleAge) WDG_NOT_READY(@"采集样本超过十分钟，请刷新确认数据");
+    WDGObserverBuild *live=WDGBuild(vm,page,candidate.pageKind);
+    if(live.requestModel!=candidate.publishedRequest||live.confirmationModel!=candidate.publishedConfirmation||![live.fingerprint isEqualToString:candidate.fingerprint]) WDG_NOT_READY(@"采集后商品、金额或参数已变化");
+    if(live.readinessReason.length) WDG_NOT_READY(live.readinessReason);
+    NSNumber *normalized=WDGNormalizePayType(payType);
+    if(!normalized||![live.allowedPayTypes containsObject:normalized]) WDG_NOT_READY(@"请选择当前确认数据中的支付参数");
+    NSString *apiReason=nil;
+    if(![WDGOrderService runtimeReady:&apiReason]) WDG_NOT_READY(apiReason?:@"接口 Service 未就绪");
+    if(requestOut)*requestOut=live.requestModel;
+    if(confirmationOut)*confirmationOut=live.confirmationModel;
+    if(normalizedOut)*normalizedOut=normalized;
+    if(reason)*reason=nil;
     return YES;
 #undef WDG_NOT_READY
 }
 
-BOOL WDGNativeTargetReady(NSString *sampleKey, NSNumber *payType, NSString **reason) {
-    __block BOOL ready = NO;
-    __block NSString *message = @"页面状态检查失败";
-    WDGOnMainSync(^{
-        @try { ready = WDGReady(sampleKey, payType, &message, NULL, NULL, NULL); }
-        @catch (__unused NSException *exception) { ready = NO; message = @"页面状态检查异常"; }
-    });
-    if (reason) *reason = message;
-    return ready;
+BOOL WDGInterfaceTargetReady(NSString *sampleKey, NSNumber *payType, NSString **reason) {
+    __block BOOL ok=NO; __block NSString *r=nil;
+    WDGOnMainSync(^{@try{ok=WDGInterfaceReady(sampleKey,payType,&r,NULL,NULL,NULL);}@catch(__unused NSException *e){r=@"接口采集检查异常";}});
+    if(reason)*reason=r;return ok;
 }
 
-static NSError *WDGNativeError(NSInteger code, NSString *message) {
-    return [NSError errorWithDomain:@"WeidianGrab.NativeObserver" code:code
-                          userInfo:@{NSLocalizedDescriptionKey: message}];
-}
-
-BOOL WDGExecuteNativeOnce(NSString *sampleKey, NSNumber *payType, NSError **error) {
-    __block BOOL dispatched = NO;
-    __block NSError *failure = nil;
+WDGOrderService *WDGPrepareObservedInterface(NSString *sampleKey, NSNumber *payType, NSError **error) {
+    __block WDGOrderService *service=nil;__block NSError *failure=nil;
     WDGOnMainSync(^{
-        @try {
-            NSDictionary *status = [WDGCore shared].status;
-            NSDictionary *task = [status[@"task"] isKindOfClass:[NSDictionary class]] ? status[@"task"] : nil;
-            NSString *taskID = [task[@"id"] isKindOfClass:[NSString class]] ? task[@"id"] : nil;
-            NSNumber *taskPayType = WDGNormalizePayType(task[@"payType"]);
-            NSNumber *normalized = WDGNormalizePayType(payType);
-            BOOL armed = [task[@"state"] isEqual:@"firing"] && [task[@"action"] isEqual:@"nativeOnce"] &&
-                taskID.length && taskID.length <= 128 && [task[@"sampleKey"] isEqual:sampleKey] &&
-                taskPayType && normalized && [taskPayType isEqualToNumber:normalized];
-            if (!armed) { failure = WDGNativeError(1, @"缺少匹配的用户一次性任务"); return; }
-            if ([WDGLastConsumedTaskID isEqualToString:taskID]) {
-                failure = WDGNativeError(2, @"该任务已经消费"); return;
+        @try{
+            id request=nil,confirmation=nil;NSNumber *normalized=nil;NSString *reason=nil;
+            if(!WDGInterfaceReady(sampleKey,payType,&reason,&request,&confirmation,&normalized)){
+                failure=[NSError errorWithDomain:@"WeidianGrab.Interface" code:1 userInfo:@{NSLocalizedDescriptionKey:reason?:@"采集参数未就绪"}];return;
             }
-            NSString *reason = nil;
-            id page = nil;
-            SEL selector = NULL;
-            if (!WDGReady(sampleKey, normalized, &reason, &page, &selector, &normalized)) {
-                failure = WDGNativeError(3, reason ?: @"页面当前未就绪"); return;
-            }
-            UIView *targetView = [page isKindOfClass:[UIViewController class]] ?
-                ((UIViewController *)page).viewIfLoaded : (UIView *)page;
-            if (!WDGWindowAllowsTarget(targetView.window, YES)) {
-                failure = WDGNativeError(5, @"目标窗口被其他窗口或未关闭的助手弹窗覆盖"); return;
-            }
-            // Consume before invoking the UI entry. Even an exception never retries
-            // this task; a later explicit arm has a new task UUID.
-            WDGLastConsumedTaskID = [taskID copy];
-            WDGDispatchCount++;
-            ((void (*)(id, SEL, NSUInteger))objc_msgSend)(page, selector, normalized.unsignedIntegerValue);
-            dispatched = YES; // Dispatch only, never a claim of order/payment success.
-        } @catch (__unused NSException *exception) {
-            failure = WDGNativeError(4, @"原生检查或 UI 入口异常；本次未重试");
-        }
+            service=[WDGOrderService prepareRequest:request confirmation:confirmation sampleKey:sampleKey payType:normalized error:&failure];
+        }@catch(__unused NSException *e){failure=[NSError errorWithDomain:@"WeidianGrab.Interface" code:2 userInfo:@{NSLocalizedDescriptionKey:@"接口参数绑定异常"}];}
     });
-    if (error) *error = failure;
-    return dispatched;
+    if(error)*error=failure;return service;
 }

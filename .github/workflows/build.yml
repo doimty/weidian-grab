@@ -21,8 +21,8 @@ jobs:
       THEOS_PACKAGE_SCHEME: roothide
       FINALPACKAGE: '1'
       HOMEBREW_NO_AUTO_UPDATE: '1'
-      PACKAGE_VERSION: '0.5.2'
-      PACKAGE_DEB: packages/com.koudai.weidian.grab_0.5.2_iphoneos-arm64e.deb
+      PACKAGE_VERSION: '0.6.0'
+      PACKAGE_DEB: packages/com.koudai.weidian.grab_0.6.0_iphoneos-arm64e.deb
       # Same RootHide Theos revision as the working OKOK build.
       # Provenance: https://github.com/roothide/theos/commit/88506b2c22e9e07dd4ed055f23c9e398a117a2c7
       THEOS_COMMIT: 88506b2c22e9e07dd4ed055f23c9e398a117a2c7
@@ -167,13 +167,16 @@ jobs:
       - name: Run production task-gate assertions on macOS
         run: |
           set -euo pipefail
-          test_binary="$RUNNER_TEMP/weidian-grab-task-gate-test"
-          test_log="$RUNNER_TEMP/weidian-grab-task-gate-test.log"
-          printf '%s\n' 'clang -std=c11 -Wall -Wextra -Werror -UNDEBUG Tests/task_gate_test.c' \
-            | tee "$test_log"
-          xcrun --sdk macosx clang -std=c11 -Wall -Wextra -Werror -UNDEBUG \
-            Tests/task_gate_test.c -o "$test_binary" 2>&1 | tee -a "$test_log"
-          "$test_binary" 2>&1 | tee -a "$test_log"
+          test_log="$RUNNER_TEMP/weidian-grab-state-tests.log"
+          : > "$test_log"
+          for pair in "Tests/task_gate_test.c:task-gate" "Tests/service_state_test.c:service-state"; do
+            source="${pair%%:*}"; name="${pair##*:}"
+            binary="$RUNNER_TEMP/weidian-grab-$name-test"
+            echo "== $source ==" | tee -a "$test_log"
+            xcrun --sdk macosx clang -std=c11 -Wall -Wextra -Werror -UNDEBUG \
+              "$source" -o "$binary" 2>&1 | tee -a "$test_log"
+            "$binary" 2>&1 | tee -a "$test_log"
+          done
 
       - name: Clean and build exact package with full log
         run: |
@@ -197,9 +200,9 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: weidian-grab-roothide-0.5.2
+          name: weidian-grab-roothide-0.6.0
           path: |
-            packages/com.koudai.weidian.grab_0.5.2_iphoneos-arm64e.deb
+            packages/com.koudai.weidian.grab_0.6.0_iphoneos-arm64e.deb
             manifest.json
             toolchain.json
             build.log

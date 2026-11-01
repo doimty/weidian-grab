@@ -123,18 +123,18 @@
     self.stateLabel=[self label:11 weight:UIFontWeightRegular];[stack addArrangedSubview:self.stateLabel];
     self.captureButton=[self button:@"自动采集" action:@selector(toggleCapture) identifier:@"WDG.CaptureToggle"];[stack addArrangedSubview:self.captureButton];
     self.sampleLabel=[self label:12 weight:UIFontWeightRegular];self.sampleLabel.accessibilityIdentifier=@"WDG.SampleSummary";[stack addArrangedSubview:self.sampleLabel];
-    self.action=[[UISegmentedControl alloc] initWithItems:@[@"到点提醒",@"本地演练",@"提交一次"]];self.action.selectedSegmentIndex=1;
+    self.action=[[UISegmentedControl alloc] initWithItems:@[@"到点提醒",@"本地演练",@"接口直提"]];self.action.selectedSegmentIndex=1;
     [self.action addTarget:self action:@selector(actionChanged) forControlEvents:UIControlEventValueChanged];self.action.accessibilityIdentifier=@"WDG.Action";[stack addArrangedSubview:self.action];
     self.datePicker=[UIDatePicker new];self.datePicker.datePickerMode=UIDatePickerModeDateAndTime;self.datePicker.preferredDatePickerStyle=UIDatePickerStyleCompact;
     self.datePicker.locale=[[NSLocale alloc] initWithLocaleIdentifier:@"zh_CN"];self.datePicker.timeZone=NSTimeZone.localTimeZone;
     self.datePicker.date=[NSDate dateWithTimeIntervalSinceNow:60];self.datePicker.accessibilityIdentifier=@"WDG.FireAt";[stack addArrangedSubview:self.datePicker];
-    self.payButton=[self button:@"选择当前页提交按钮" action:@selector(selectPayType) identifier:@"WDG.PayType"];[stack addArrangedSubview:self.payButton];self.payButton.hidden=YES;
+    self.payButton=[self button:@"选择已采集支付参数" action:@selector(selectPayType) identifier:@"WDG.PayType"];[stack addArrangedSubview:self.payButton];self.payButton.hidden=YES;
     [stack addArrangedSubview:[self button:@"设置定时任务" action:@selector(schedule) identifier:@"WDG.ArmTask"]];
     [stack addArrangedSubview:[self button:@"5 秒本地演练（不发请求）" action:@selector(localTest) identifier:@"WDG.DryRun5Seconds"]];
     self.countdownLabel=[self label:14 weight:UIFontWeightSemibold];self.countdownLabel.accessibilityIdentifier=@"WDG.Countdown";[stack addArrangedSubview:self.countdownLabel];
     [stack addArrangedSubview:[self button:@"取消当前任务" action:@selector(cancel) identifier:@"WDG.CancelTask"]];
     self.noticeLabel=[self label:11 weight:UIFontWeightRegular];self.noticeLabel.textColor=UIColor.secondaryLabelColor;
-    self.noticeLabel.text=@"任务使用设备时间。保持微店在前台；后台、锁屏或新样本会取消。到点重新核对页面、商品与按钮。仅调用原生入口一次，后续验证与支付以微店为准。";[stack addArrangedSubview:self.noticeLabel];
+    self.noticeLabel.text=@"POST vbuy/CreateOrder/1.0 · 接口直提。悬浮面板只配置任务，不执行页面点击。保持 App 前台，发出前可取消；发出后取消不代表撤单。不打开支付 URL。";[stack addArrangedSubview:self.noticeLabel];
     UIStackView *row=[[UIStackView alloc] initWithArrangedSubviews:@[[self button:@"清空采集" action:@selector(clear) identifier:@"WDG.ClearSnapshot"],[self button:@"导出诊断" action:@selector(export) identifier:@"WDG.Export"]]];row.axis=UILayoutConstraintAxisHorizontal;row.distribution=UIStackViewDistributionFillEqually;row.spacing=10;[stack addArrangedSubview:row];
     [stack addArrangedSubview:[self button:@"收起悬浮面板" action:@selector(closePanel) identifier:@"WDG.ClosePanel"]];
 }
@@ -143,18 +143,18 @@
     NSDictionary *s=WDGCore.shared.status;NSDictionary *snapshot=s[@"snapshot"],*task=s[@"task"];
     self.stateLabel.text=[NSString stringWithFormat:@"v%@ · %@ · %@",s[@"version"],s[@"build"],[s[@"ioError"] length]?s[@"ioError"]:@"沙盒存储正常"];
     [self.captureButton setTitle:[s[@"captureEnabled"] boolValue]?@"自动采集：开启（点击暂停）":@"自动采集：暂停（点击开启）" forState:UIControlStateNormal];
-    if(![self.shownSample isEqual:snapshot[@"sampleKey"]]){self.payType=nil;self.shownSample=snapshot[@"sampleKey"];[self.payButton setTitle:@"选择当前页提交按钮" forState:UIControlStateNormal];}
+    if(![self.shownSample isEqual:snapshot[@"sampleKey"]]){self.payType=nil;self.shownSample=snapshot[@"sampleKey"];[self.payButton setTitle:@"选择已采集支付参数" forState:UIControlStateNormal];}
     NSMutableArray *lines=[NSMutableArray array];
     if(![snapshot[@"items"] count]) [lines addObject:@"未采集到订单摘要。请在 App 中进入确认页，选择商品与规格；助手只观察自然发生的数据更新。"];
     else {
         [lines addObject:[NSString stringWithFormat:@"%@ · %@",snapshot[@"pageKind"]?:@"",snapshot[@"stage"]?:@""]];
-        NSUInteger i=0;for(NSDictionary *item in snapshot[@"items"]){if(i++>=5){[lines addObject:@"…更多条目请导出诊断查看"];break;}[lines addObject:[NSString stringWithFormat:@"%@ / %@ × %@",item[@"title"]?:item[@"itemRef"]?:@"商品",item[@"skuTitle"]?:item[@"skuRef"]?:@"未选规格",item[@"quantity"]?:@"?"]];}
+        for(NSDictionary *item in snapshot[@"items"]){ [lines addObject:[NSString stringWithFormat:@"%@ / %@ × %@",item[@"title"]?:item[@"itemRef"]?:@"商品",item[@"skuTitle"]?:item[@"skuRef"]?:@"未选规格",item[@"quantity"]?:@"?"]];}
         [lines addObject:[NSString stringWithFormat:@"确认金额：%@",snapshot[@"totalPrice"]?:@"待确认"]];
     }
     self.sampleLabel.text=[lines componentsJoinedByString:@"\n"];
     NSString *state=task[@"state"];
     if([state isEqual:@"armed"]){NSTimeInterval remain=MAX(0,[task[@"dueAt"] doubleValue]-NSDate.date.timeIntervalSince1970);self.countdownLabel.text=[NSString stringWithFormat:@"待执行：%02ld:%02ld:%04.1f",(long)(remain/3600),(long)((NSInteger)(remain/60)%60),fmod(remain,60)];}
-    else self.countdownLabel.text=[NSString stringWithFormat:@"%@%@",@{@"idle":@"尚未设置任务",@"firing":@"正在执行",@"fired":@"本地任务已完成",@"dispatched":@"已交给微店处理",@"cancelled":@"任务已取消",@"failed":@"任务未执行"}[state]?:state,[task[@"reason"] length]?[NSString stringWithFormat:@"\n%@",task[@"reason"]]:@""];
+    else self.countdownLabel.text=[NSString stringWithFormat:@"%@%@",@{@"idle":@"尚未设置任务",@"firing":@"准备接口参数",@"sending":@"接口已发出，等待响应",@"apiSucceeded":@"创建接口返回成功",@"unknown":@"订单结果待核对（不重试）",@"fired":@"本地任务已完成",@"cancelled":@"任务已取消",@"failed":@"接口任务未完成"}[state]?:state,[task[@"reason"] length]?[NSString stringWithFormat:@"\n%@",task[@"reason"]]:@""];
 }
 - (void)actionChanged {self.payButton.hidden=self.action.selectedSegmentIndex!=2;}
 - (void)toggleCapture {WDGCore *c=WDGCore.shared;[c setCaptureEnabled:![c.status[@"captureEnabled"] boolValue]];}
@@ -172,20 +172,20 @@
     NSArray *options=WDGCore.shared.status[@"snapshot"][@"payOptions"];
     if(options.count==0){[self alert:@"当前页尚未就绪" message:@"尚未读取到服务端确认页的提交按钮，不会猜按钮枚举值。请先进入订单确认页。 "];return;}
     UIAlertController *a=[UIAlertController alertControllerWithTitle:@"选择当前页按钮" message:@"这里只选择按钮，不执行点击或下单。" preferredStyle:UIAlertControllerStyleAlert];
-    for(NSDictionary *o in options){NSString *title=o[@"title"]?:@"按钮";NSNumber *type=o[@"type"];if(![type isKindOfClass:NSNumber.class])continue;[a addAction:[UIAlertAction actionWithTitle:[NSString stringWithFormat:@"%@（%@）",title,type] style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *action){self.payType=type;[self.payButton setTitle:[NSString stringWithFormat:@"提交按钮：%@",title] forState:UIControlStateNormal];}]];}
+    for(NSDictionary *o in options){NSString *title=o[@"title"]?:@"按钮";NSNumber *type=o[@"type"];if(![type isKindOfClass:NSNumber.class])continue;[a addAction:[UIAlertAction actionWithTitle:[NSString stringWithFormat:@"%@（%@）",title,type] style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *action){self.payType=type;[self.payButton setTitle:[NSString stringWithFormat:@"接口支付参数：%@",title] forState:UIControlStateNormal];}]];}
     [a addAction:[UIAlertAction actionWithTitle:@"取消" style:UIAlertActionStyleCancel handler:nil]];[self.window.rootViewController presentViewController:a animated:YES completion:nil];
 }
 - (void)schedule {
-    NSString *action=@[@"reminder",@"dryRun",@"nativeOnce"][self.action.selectedSegmentIndex];
+    NSString *action=@[@"reminder",@"dryRun",@"serviceOnce"][self.action.selectedSegmentIndex];
     NSDate *date=self.datePicker.date;
     void (^arm)(void)=^{NSError *error=nil;if(![WDGCore.shared armAt:date action:action payType:self.payType error:&error])[self alert:@"任务未设置" message:error.localizedDescription];};
-    if(![action isEqual:@"nativeOnce"]){arm();return;}
+    if(![action isEqual:@"serviceOnce"]){arm();return;}
     NSDictionary *snapshot=WDGCore.shared.status[@"snapshot"];
     NSString *reason=nil;
-    if(!WDGNativeTargetReady(snapshot[@"sampleKey"],self.payType,&reason)){[self alert:@"请先完成确认页采集" message:reason?:@"页面或按钮尚未验证"];return;}
-    NSDateFormatter *df=[NSDateFormatter new];df.dateFormat=@"yyyy-MM-dd HH:mm:ss";
-    NSString *review=[NSString stringWithFormat:@"%@\n\n金额：%@\n执行时间：%@\n\n仅调用当前页面的原生提交流程一次，可能生成真实订单并进入付款流程。后续验证和支付以微店为准。确认后才设置任务。",self.sampleLabel.text,snapshot[@"totalPrice"]?:@"待确认",[df stringFromDate:date]];
-    UIAlertController *a=[UIAlertController alertControllerWithTitle:@"确认定时提交一次" message:review preferredStyle:UIAlertControllerStyleAlert];
+    if(!WDGInterfaceTargetReady(snapshot[@"sampleKey"],self.payType,&reason)){[self alert:@"请先完成确认页采集" message:reason?:@"页面或按钮尚未验证"];return;}
+    NSDateFormatter *df=[NSDateFormatter new];df.dateFormat=@"yyyy-MM-dd HH:mm:ss ZZZZ";
+    NSString *review=[NSString stringWithFormat:@"%@\n\n金额：%@\n执行时间：%@\n\n到点直接提交 CreateOrder 接口，可能产生真实订单及所选支付方式的服务端效果。插件不执行页面点击、不打开支付链接。确认后才设置接口任务。",self.sampleLabel.text,snapshot[@"totalPrice"]?:@"待确认",[df stringFromDate:date]];
+    UIAlertController *a=[UIAlertController alertControllerWithTitle:@"确认定时接口直提" message:review preferredStyle:UIAlertControllerStyleAlert];
     [a addAction:[UIAlertAction actionWithTitle:@"取消" style:UIAlertActionStyleCancel handler:nil]];
     [a addAction:[UIAlertAction actionWithTitle:@"确认以上商品及时间" style:UIAlertActionStyleDestructive handler:^(__unused UIAlertAction *v){arm();}]];
     [self.window.rootViewController presentViewController:a animated:YES completion:nil];

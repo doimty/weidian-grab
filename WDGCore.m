@@ -1,12 +1,13 @@
 #import "WDGCore.h"
 #import "WDGBuild.h"
 #import "WDGTaskGate.h"
+#import "WDGOrderService.h"
 #import <fcntl.h>
 #import <unistd.h>
 #import <errno.h>
 
 NSString * const WDGStateDidChange = @"WDGStateDidChange";
-NSString * const WDGVersion = @"0.5.2";
+NSString * const WDGVersion = @"0.6.0";
 #ifndef WDG_BUILD_ID
 #define WDG_BUILD_ID "local-unbuilt"
 #endif
@@ -25,6 +26,9 @@ static NSError *WGDError(NSInteger code, NSString *message) {
 @property (nonatomic, copy) NSString *storagePath;
 @property (nonatomic, copy) NSString *ioError;
 @property (nonatomic) NSUInteger firedCount;
+@property (nonatomic,strong) WDGOrderService *preparedService;
+@property (nonatomic,strong) NSTimer *replyTimeout;
+@property (nonatomic,copy) NSDictionary *lastReceipt;
 @end
 
 @implementation WDGCore {
@@ -55,8 +59,11 @@ static NSError *WGDError(NSInteger code, NSString *message) {
             if ([enabled isKindOfClass:NSNumber.class]) _captureEnabled=enabled.boolValue;
             // Never resume a transaction after process restart: UI bindings are gone.
             NSDictionary *task=prior[@"task"];
-            if ([task isKindOfClass:NSDictionary.class] && [@[@"armed",@"firing"] containsObject:task[@"state"]]) {
-                _task=[task mutableCopy];_task[@"state"]=@"cancelled";_task[@"reason"]=@"App 已重启，请重新设置任务";
+            if ([task isKindOfClass:NSDictionary.class] && [@[@"armed",@"firing",@"sending",@"unknown"] containsObject:task[@"state"]]) {
+                _task=[task mutableCopy];
+                BOOL sent=[@[@"sending",@"unknown"] containsObject:task[@"state"]];
+                _task[@"state"]=sent?@"unknown":@"cancelled";
+                _task[@"reason"]=sent?@"上次接口请求结果待核对，不自动重试":@"App 已重启，旧任务已取消";
             }
         }
         NSNotificationCenter *nc=NSNotificationCenter.defaultCenter;
@@ -74,7 +81,7 @@ static NSError *WGDError(NSInteger code, NSString *message) {
     }
     return @{@"version":WDGVersion,@"build":WDGBuildID,@"captureEnabled":@(self.captureEnabled),
              @"snapshot":self.snapshot?:@{},@"task":[self.task copy],@"events":[self.recent copy],
-             @"firedCount":@(self.firedCount),@"ioError":self.ioError?:@"",@"storagePath":self.storagePath};
+             @"firedCount":@(self.firedCount),@"ioError":self.ioError?:@"",@"storagePath":self.storagePath,@"receipt":self.lastReceipt?:@{},@"transport":[WDGOrderService diagnostics]};
 }
 - (void)persist {
     // Call only on the main queue. All persisted fields are our own metadata or
@@ -143,22 +150,30 @@ static NSError *WGDError(NSInteger code, NSString *message) {
 - (BOOL)armAt:(NSDate *)date action:(NSString *)action payType:(NSNumber *)payType error:(NSError **)error {
     if(!NSThread.isMainThread){if(error)*error=WGDError(1,@"请在主线程设置任务");return NO;}
     NSTimeInterval delta=[date timeIntervalSinceNow];
+    if([self.task[@"state"] isEqual:@"sending"]){if(error)*error=WGDError(3,@"上一笔接口请求正在等待结果，请勿覆盖");return NO;}
     NSString *reason=nil;
-    if(![@[@"reminder",@"dryRun",@"nativeOnce"] containsObject:action])reason=@"未知任务类型";
+    if(![@[@"reminder",@"dryRun",@"serviceOnce"] containsObject:action])reason=@"未知任务类型";
     else if(delta<2||delta>86400)reason=@"任务时间请设在 2 秒至 24 小时以内";
     else if(UIApplication.sharedApplication.applicationState!=UIApplicationStateActive)reason=@"请保持微店在前台";
-    else if([action isEqual:@"nativeOnce"]){
+    else if([action isEqual:@"serviceOnce"]){
         NSArray *items=self.snapshot[@"items"];
         NSString *price=self.snapshot[@"totalPrice"];
         if(items.count==0||price.length==0)reason=@"请先进入订单确认页采集商品、规格及金额";
         else if(!payType)reason=@"请选择从当前确认页读取的提交按钮";
         else {
             NSString *bindingReason=nil;
-            if(!WDGNativeTargetReady(self.snapshot[@"sampleKey"],payType,&bindingReason)) reason=bindingReason?:@"当前页面尚未完成验证";
+            if(!WDGInterfaceTargetReady(self.snapshot[@"sampleKey"],payType,&bindingReason)) reason=bindingReason?:@"当前页面尚未完成验证";
         }
     }
+    if([action isEqual:@"serviceOnce"] && delta>590)reason=@"接口参数本轮只验证十分钟有效期，请把任务设在十分钟以内";
     if(reason){if(error)*error=WGDError(2,reason);return NO;}
+    WDGOrderService *prepared=nil;
+    if([action isEqual:@"serviceOnce"]){
+        prepared=WDGPrepareObservedInterface(self.snapshot[@"sampleKey"],payType,error);
+        if(!prepared)return NO;
+    }
     [self cancelTask:@"新任务替代旧任务"];
+    self.preparedService=prepared;self.lastReceipt=nil;
     self.task=[@{@"id":NSUUID.UUID.UUIDString,@"state":@"armed",@"action":action,@"sampleKey":self.snapshot[@"sampleKey"]?:@"",@"payType":payType?:NSNull.null,@"dueAt":@(date.timeIntervalSince1970),@"armedAt":@(NSDate.date.timeIntervalSince1970)} mutableCopy];
     WDGTaskGateArm(&_taskGate,date.timeIntervalSince1970);
     self.timer=[NSTimer timerWithTimeInterval:0.1 target:self selector:@selector(tick:) userInfo:nil repeats:YES];
@@ -179,12 +194,17 @@ static NSError *WGDError(NSInteger code, NSString *message) {
     NSString *action=self.task[@"action"];
     self.task[@"state"]=@"firing";
     [self recordEvent:@"timer_fired" details:@{@"action":action,@"taskId":self.task[@"id"],@"latenessMs":@(late*1000)}];
-    if([action isEqual:@"nativeOnce"]){
-        NSError *error=nil;
-        BOOL sent=WDGExecuteNativeOnce(self.task[@"sampleKey"],self.task[@"payType"],&error);
-        self.task[@"state"]=sent?@"dispatched":@"failed";
-        self.task[@"reason"]=sent?@"已交给微店处理，请查看 App 的订单结果":(error.localizedDescription?:@"页面状态未通过验证");
-        [self recordEvent:sent?@"native_dispatched":@"native_cancelled" details:@{@"taskId":self.task[@"id"],@"reason":self.task[@"reason"]}];
+    if([action isEqual:@"serviceOnce"]){
+        NSError *error=nil;NSString *taskID=[self.task[@"id"] copy];
+        self.task[@"state"]=@"sending";self.task[@"reason"]=@"直接提交 CreateOrder 接口，等待响应";
+        [self recordEvent:@"interface_send" details:@{@"taskId":taskID}];
+        __weak WDGCore *weakSelf=self;
+        BOOL sent=[self.preparedService submitTask:taskID completion:^(NSDictionary *receipt){[weakSelf completeReply:receipt taskID:taskID];} error:&error];
+        if(!sent){self.task[@"state"]=@"failed";self.task[@"reason"]=error.localizedDescription?:@"参数验证未通过，未发出请求";self.preparedService=nil;[self recordEvent:@"interface_not_sent" details:@{@"taskId":taskID,@"reason":self.task[@"reason"]}];}
+        else if([self.task[@"state"] isEqual:@"sending"]){
+            self.replyTimeout=[NSTimer timerWithTimeInterval:30 target:self selector:@selector(replyTimedOut:) userInfo:taskID repeats:NO];
+            [NSRunLoop.mainRunLoop addTimer:self.replyTimeout forMode:NSRunLoopCommonModes];
+        }
     } else {
         self.firedCount++;
         self.task[@"state"]=@"fired";
@@ -196,17 +216,37 @@ static NSError *WGDError(NSInteger code, NSString *message) {
 }
 - (void)cancelTask:(NSString *)reason {
     if(!NSThread.isMainThread){dispatch_async(dispatch_get_main_queue(), ^{[self cancelTask:reason];});return;}
+    if([self.task[@"state"] isEqual:@"sending"]){self.task[@"reason"]=@"请求已经发出，继续等待结果；本地取消不代表撤单";[self recordEvent:@"cancel_after_send" details:@{@"taskId":self.task[@"id"]}];return;}
     WDGTaskGateCancel(&_taskGate);
     [self.timer invalidate];self.timer=nil;
+    self.preparedService=nil;
     if([@[@"armed",@"firing"] containsObject:self.task[@"state"]]){
         self.task[@"state"]=@"cancelled";self.task[@"reason"]=reason?:@"用户取消";
         [self recordEvent:@"task_cancelled" details:@{@"reason":self.task[@"reason"],@"taskId":self.task[@"id"]?:@""}];
     }
 }
+- (void)completeReply:(NSDictionary *)receipt taskID:(NSString *)taskID {
+    if(![self.task[@"id"] isEqual:taskID]||![@[@"sending",@"unknown"] containsObject:self.task[@"state"]])return;
+    [self.replyTimeout invalidate];self.replyTimeout=nil;
+    self.lastReceipt=[receipt copy];self.preparedService=nil;
+    self.task[@"state"]=receipt[@"state"]?:@"unknown";
+    self.task[@"reason"]=receipt[@"message"]?:@"接口结果待核对";
+    self.task[@"apiSucceeded"]=receipt[@"apiSucceeded"]?:@NO;
+    self.task[@"orderCount"]=receipt[@"orderCount"]?:@0;
+    [self recordEvent:@"interface_result" details:@{@"taskId":taskID,@"state":self.task[@"state"],@"reason":self.task[@"reason"]}];
+}
+- (void)replyTimedOut:(NSTimer *)timer {
+    NSString *taskID=timer.userInfo;
+    if(![self.task[@"id"] isEqual:taskID]||![self.task[@"state"] isEqual:@"sending"])return;
+    [self.preparedService expireUnresolvedTask:taskID];
+    self.task[@"state"]=@"unknown";self.task[@"reason"]=@"接口暂未返回，订单结果待核对；未自动重试";
+    [self recordEvent:@"interface_timeout" details:@{@"taskId":taskID}];
+}
 - (void)willResign:(NSNotification *)n {[self cancelTask:@"微店已切到后台或锁屏，请重新设置任务"] ;}
 - (void)clockChanged:(NSNotification *)n {[self cancelTask:@"系统时间已变化，请重新设置任务"] ;}
 - (NSString *)exportReport:(NSError **)error {
     NSMutableDictionary *data=[self.status mutableCopy];
+    [data removeObjectForKey:@"receipt"]; // Any order numbers stay in UI memory.
     data[@"hooks"]=WDGObserverDiagnostics();
     NSData *json=[NSJSONSerialization dataWithJSONObject:data options:NSJSONWritingPrettyPrinted error:error];
     NSString *path=[self.storagePath stringByAppendingPathComponent:@"report.json"];

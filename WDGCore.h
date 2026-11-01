@@ -25,7 +25,8 @@ FOUNDATION_EXPORT NSString * const WDGBuildID;
 FOUNDATION_EXPORT void WDGInstallTradeObservers(void);
 FOUNDATION_EXPORT void WDGRefreshTradeSnapshot(void);
 FOUNDATION_EXPORT NSDictionary *WDGObserverDiagnostics(void);
-FOUNDATION_EXPORT BOOL WDGNativeTargetReady(NSString * _Nullable sampleKey, NSNumber * _Nullable payType, NSString * _Nullable * _Nullable reason);
-FOUNDATION_EXPORT BOOL WDGExecuteNativeOnce(NSString * _Nullable sampleKey, NSNumber * _Nullable payType, NSError * _Nullable * _Nullable error);
+@class WDGOrderService;
+FOUNDATION_EXPORT BOOL WDGInterfaceTargetReady(NSString * _Nullable sampleKey, NSNumber * _Nullable payType, NSString * _Nullable * _Nullable reason);
+FOUNDATION_EXPORT WDGOrderService * _Nullable WDGPrepareObservedInterface(NSString *sampleKey, NSNumber *payType, NSError * _Nullable * _Nullable error);
 FOUNDATION_EXPORT void WDGShowOverlay(void);
 NS_ASSUME_NONNULL_END

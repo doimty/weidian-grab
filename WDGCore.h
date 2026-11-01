@@ -16,6 +16,7 @@ FOUNDATION_EXPORT NSString * const WDGBuildID;
 - (void)acceptSnapshot:(NSDictionary *)snapshot;
 - (void)clearSnapshot;
 - (BOOL)armAt:(NSDate *)date action:(NSString *)action payType:(NSNumber * _Nullable)payType error:(NSError **)error;
+- (BOOL)armCartAt:(NSDate *)date maximumTotal:(NSDecimalNumber *)maximumTotal error:(NSError **)error;
 - (void)cancelTask:(NSString *)reason;
 - (NSString * _Nullable)exportReport:(NSError **)error;
 @end

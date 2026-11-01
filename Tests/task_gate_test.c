@@ -28,6 +28,11 @@ int main(void) {
     assert(WDGTaskGateTick(&g,800,1)==WDGTickWait);
     assert(WDGTaskGateTick(&g,900,1)==WDGTickFire);
     assert(WDGTaskGateTick(&g,900,1)==WDGTickIdle);
-    puts("PASS: 15 production task-gate assertions (no network or purchase calls)");
+    assert(WDGActionIsInterface("preheatOnce"));
+    assert(WDGActionIsInterface("serviceOnce"));
+    assert(!WDGActionIsInterface("dryRun"));
+    assert(!WDGActionIsInterface("reminder"));
+    assert(!WDGActionIsInterface(NULL));
+    puts("PASS: production task gate and interface-action routing assertions");
     return 0;
 }

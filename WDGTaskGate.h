@@ -1,6 +1,10 @@
 #ifndef WDG_TASK_GATE_H
 #define WDG_TASK_GATE_H
 #include <math.h>
+#include <string.h>
+static inline int WDGActionIsInterface(const char *action) {
+    return action && (!strcmp(action,"serviceOnce") || !strcmp(action,"preheatOnce"));
+}
 
 typedef enum { WDGTickIdle, WDGTickWait, WDGTickFire, WDGTickInactive, WDGTickExpired } WDGTickDecision;
 typedef struct { int armed; double dueAt; } WDGTaskGate;

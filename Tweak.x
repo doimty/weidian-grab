@@ -13,7 +13,18 @@
 #import <Foundation/Foundation.h>
 #import <objc/runtime.h>
 
-#define GRAB_LOG_PATH   @"/var/mobile/weidiangrab.log"
+// App 在沙盒里，容器外的路径一律写不进（哪怕用户是 mobile）。
+// 日志放 App 自己的 Documents，同时打 NSLog 便于 syslog 观察。
+static NSString *grab_log_path(void) {
+    static NSString *p = nil;
+    if (!p) {
+        NSString *docs = [NSHomeDirectory() stringByAppendingPathComponent:@"Documents"];
+        [[NSFileManager defaultManager] createDirectoryAtPath:docs
+                                  withIntermediateDirectories:YES attributes:nil error:nil];
+        p = [docs stringByAppendingPathComponent:@"weidiangrab.log"];
+    }
+    return p;
+}
 #define GRAB_CONF_PATH  @"/var/mobile/Library/Preferences/com.koudai.weidian.grab.json"
 
 static NSMutableDictionary *gConf = nil;
@@ -34,12 +45,13 @@ static void grab_log(NSString *fmt, ...) {
     df.dateFormat = @"HH:mm:ss.SSS";
     NSString *line = [NSString stringWithFormat:@"[%@] %@\n",
                       [df stringFromDate:[NSDate date]], msg];
+    NSLog(@"[WeidianGrab] %@", msg);
 
     [gLock lock];
-    NSFileHandle *fh = [NSFileHandle fileHandleForWritingAtPath:GRAB_LOG_PATH];
+    NSFileHandle *fh = [NSFileHandle fileHandleForWritingAtPath:grab_log_path()];
     if (!fh) {
-        [[NSFileManager defaultManager] createFileAtPath:GRAB_LOG_PATH contents:nil attributes:nil];
-        fh = [NSFileHandle fileHandleForWritingAtPath:GRAB_LOG_PATH];
+        [[NSFileManager defaultManager] createFileAtPath:grab_log_path() contents:nil attributes:nil];
+        fh = [NSFileHandle fileHandleForWritingAtPath:grab_log_path()];
     }
     if (fh) {
         [fh seekToEndOfFile];

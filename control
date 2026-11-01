@@ -1,6 +1,6 @@
 Package: com.koudai.weidian.grab
 Name: WeidianGrab
-Version: 0.4.2
+Version: 0.4.3
 Architecture: iphoneos-arm64
 Description: 微店买家版抓包/抢单（悬浮球 + 定时开售自动执行）
 Maintainer: doimty

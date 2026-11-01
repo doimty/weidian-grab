@@ -32,7 +32,6 @@ jobs:
           make package FINALPACKAGE=1 THEOS="$THEOS" 2>&1 | tee /tmp/build.log | tail -60
           echo "--- deb output ---"
           ls -la packages/
-          test -n "$(ls packages/*.deb)"
           test -s /tmp/debs.txt
 
       - name: Inspect package

@@ -24,7 +24,7 @@ FOUNDATION_EXPORT NSString * const WDGBuildID;
 // explicitly armed by the user in the panel; no arbitrary HTTP replay.
 FOUNDATION_EXPORT void WDGInstallTradeObservers(void);
 FOUNDATION_EXPORT NSDictionary *WDGObserverDiagnostics(void);
-FOUNDATION_EXPORT BOOL WDGNativeTargetReady(NSString *sampleKey, NSNumber * _Nullable payType, NSString **reason);
-FOUNDATION_EXPORT BOOL WDGExecuteNativeOnce(NSString *sampleKey, NSNumber *payType, NSError **error);
+FOUNDATION_EXPORT BOOL WDGNativeTargetReady(NSString * _Nullable sampleKey, NSNumber * _Nullable payType, NSString * _Nullable * _Nullable reason);
+FOUNDATION_EXPORT BOOL WDGExecuteNativeOnce(NSString * _Nullable sampleKey, NSNumber * _Nullable payType, NSError * _Nullable * _Nullable error);
 FOUNDATION_EXPORT void WDGShowOverlay(void);
 NS_ASSUME_NONNULL_END

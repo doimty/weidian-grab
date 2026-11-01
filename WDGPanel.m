@@ -88,7 +88,14 @@
 - (void)togglePanel {if(self.card&&!self.card.hidden)[self closePanel];else [self openPanel];}
 - (void)openPanel {
     [self ensureWindow];if(!self.window)return;
-    for(UIWindow *w in UIApplication.sharedApplication.windows)if(w.isKeyWindow&&w!=self.window)self.previousKey=w;
+    for (UIScene *scene in UIApplication.sharedApplication.connectedScenes) {
+        if (![scene isKindOfClass:UIWindowScene.class]) continue;
+        for (UIWindow *w in ((UIWindowScene *)scene).windows) if(w.isKeyWindow&&w!=self.window) self.previousKey=w;
+    }
+    if (!self.previousKey) {
+        id<UIApplicationDelegate> delegate=UIApplication.sharedApplication.delegate;
+        if ([delegate respondsToSelector:@selector(window)]) self.previousKey=delegate.window;
+    }
     if(!self.card)[self buildCard];
     self.card.hidden=NO;self.bubble.hidden=YES;
     [self.window makeKeyWindow];

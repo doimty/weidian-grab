@@ -426,8 +426,7 @@ static UIViewController *WDGTopController(UIWindow *window) {
 
 static BOOL WDGWindowAllowsTarget(UIWindow *target, BOOL executing) {
     if (!target || target.hidden || target.alpha <= 0.01) return NO;
-    NSArray<UIWindow *> *windows = target.windowScene ? target.windowScene.windows :
-        [UIApplication sharedApplication].windows;
+    NSArray<UIWindow *> *windows = target.windowScene ? target.windowScene.windows : @[target];
     UIWindow *key = nil;
     Class helperClass = NSClassFromString(@"WDGPassWindow");
     for (UIWindow *window in windows) {

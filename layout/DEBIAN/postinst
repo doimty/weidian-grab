@@ -1,0 +1,9 @@
+#!/bin/sh
+D=/Library/MobileSubstrate/DynamicLibraries
+T="$D/WeidianGrab.dylib"
+P="$D/WeidianGrab.dylib.roothidepatch"
+if [ -f "$T" ]; then
+    rm -f "$P"
+    ln -s /usr/lib/DynamicPatches/AutoPatches.dylib "$P"
+fi
+exit 0

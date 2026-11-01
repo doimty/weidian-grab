@@ -1,4 +1,7 @@
 packages/
 .theos/
 obj/
-
+dist*/
+__pycache__/
+*.deb
+capture*.log

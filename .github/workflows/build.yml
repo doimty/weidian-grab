@@ -31,13 +31,14 @@ jobs:
           set -o pipefail
           make package FINALPACKAGE=1 THEOS="$THEOS" 2>&1 | tee /tmp/build.log | tail -60
           echo "--- deb output ---"
-          find . -name "*.deb" -newermt "-10 minutes" | tee /tmp/debs.txt
+          ls -la packages/
+          test -n "$(ls packages/*.deb)"
           test -s /tmp/debs.txt
 
       - name: Inspect package
         run: |
           set -e
-          DEB="$(find . -name '*.deb' -newermt '-10 minutes' | head -1)"
+          DEB="$(ls packages/*.deb | head -1)"
           echo "deb: $DEB"
           dpkg-deb -I "$DEB"
           dpkg-deb -c "$DEB"

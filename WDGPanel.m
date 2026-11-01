@@ -219,9 +219,16 @@
     if([maximum isEqual:NSDecimalNumber.notANumber]||[maximum compare:NSDecimalNumber.zero]!=NSOrderedDescending){[self alert:@"金额格式有误" message:@"最高金额应大于零，最多保留两位小数。"];return nil;}
     return maximum;
 }
+- (NSDate *)selectedMinute {
+    NSCalendar *calendar=[(self.datePicker.calendar?:NSCalendar.currentCalendar) copy];
+    calendar.timeZone=self.datePicker.timeZone?:NSTimeZone.localTimeZone;
+    NSDateComponents *parts=[calendar components:(NSCalendarUnitYear|NSCalendarUnitMonth|NSCalendarUnitDay|NSCalendarUnitHour|NSCalendarUnitMinute) fromDate:self.datePicker.date];
+    parts.second=0;parts.nanosecond=0;
+    return [calendar dateFromComponents:parts];
+}
 - (void)validateCartParameters {
     NSDecimalNumber *maximum=[self maximumValue];if(!maximum)return;
-    NSDate *date=[self.datePicker.date copy];
+    NSDate *date=[self selectedMinute];
     if(date.timeIntervalSinceNow<2||date.timeIntervalSinceNow>43200){[self alert:@"请选择校验时间" message:@"请选择未来 2 秒至 12 小时内的时间。仅校验参数，不设置定时任务。"];return;}
     NSString *key=[WDGCartSnapshotKey() copy];
     if(!key.length){[self alert:@"请先选择购物车目标" message:@"进入购物车采集数据，再明确选择目标商品。"];return;}
@@ -236,7 +243,7 @@
 - (void)schedule {
     NSInteger index=self.action.selectedSegmentIndex;if(index<0||index>2)return;
     NSString *action=@[@"reminder",@"dryRun",@"preheatOnce"][index];
-    NSDate *date=[self.datePicker.date copy];
+    NSDate *date=[self selectedMinute];
     if(![action isEqual:@"preheatOnce"]){NSError *error=nil;if(![WDGCore.shared armAt:date action:action payType:nil error:&error])[self alert:@"任务未设置" message:error.localizedDescription];return;}
     NSDecimalNumber *maximum=[self maximumValue];if(!maximum)return;
     [self.card endEditing:YES];

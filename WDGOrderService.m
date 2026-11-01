@@ -203,6 +203,7 @@ static id WGSCloneConfirmation(id model) {
 @property(nonatomic,strong) id confirmation;
 @property(nonatomic) BOOL settled;
 @property(nonatomic) BOOL success;
+@property(nonatomic,copy) NSString *outcome;
 @end
 @implementation WDGServiceLane
 @end
@@ -292,14 +293,19 @@ static id WGSCloneConfirmation(id model) {
     self.dueAt=due;self.maximumTotal=maximum;return YES;
 }
 - (void)fillAggregateCounters:(NSMutableDictionary *)receipt {
-    NSUInteger pending=0,successes=0,total=self.lanes.count;
-    for (WDGServiceLane *lane in self.lanes) {if(!lane.settled)++pending;else if(lane.success)++successes;}
+    NSUInteger pending=0,successes=0,unknowns=0,total=self.lanes.count;
+    for (WDGServiceLane *lane in self.lanes) {
+        if(!lane.settled){++pending;continue;}
+        if(lane.success)++successes;
+        else if([lane.outcome isEqual:@"unknown"])++unknowns;
+    }
     if (!receipt[@"apiSucceeded"]) receipt[@"apiSucceeded"]=@NO;
     if (!receipt[@"paymentInvoked"]) receipt[@"paymentInvoked"]=@NO;
     receipt[@"concurrentLanes"]=@(total?total:self.concurrentLanes);
     receipt[@"successCallbacks"]=@(successes);
     receipt[@"completedRequests"]=@(total-pending);
     receipt[@"pendingRequests"]=@(pending);
+    receipt[@"unknownRequests"]=@(unknowns);
 }
 - (void)progress:(NSString *)state message:(NSString *)message {
     if (!self.reply) return;
@@ -423,13 +429,18 @@ static id WGSCloneConfirmation(id model) {
     self.payType=buttons.firstObject;return nil;
 }
 - (void)emitAggregateTerminal:(BOOL)terminal {
-    NSUInteger pending=0,successes=0;
-    for (WDGServiceLane *lane in self.lanes) {if(!lane.settled)++pending;else if(lane.success)++successes;}
+    NSUInteger pending=0,successes=0,unknowns=0;
+    for (WDGServiceLane *lane in self.lanes) {
+        if(!lane.settled){++pending;continue;}
+        if(lane.success)++successes;
+        else if([lane.outcome isEqual:@"unknown"])++unknowns;
+    }
     NSMutableDictionary *r=[@{@"paymentInvoked":@NO,
         @"concurrentLanes":@(self.lanes.count),
         @"successCallbacks":@(successes),
         @"completedRequests":@(self.lanes.count-pending),
-        @"pendingRequests":@(pending)} mutableCopy];
+        @"pendingRequests":@(pending),
+        @"unknownRequests":@(unknowns)} mutableCopy];
     r[@"terminal"]=@(terminal);
     if(!terminal) {
         r[@"state"]=@"sending";r[@"apiSucceeded"]=@NO;
@@ -437,6 +448,9 @@ static id WGSCloneConfirmation(id model) {
     } else if(pending) {
         r[@"state"]=@"unknown";r[@"apiSucceeded"]=@NO;
         r[@"message"]=[NSString stringWithFormat:@"仍有 %lu 路未返回，订单结果待核对；未重试",(unsigned long)pending];
+    } else if(unknowns) {
+        r[@"state"]=@"unknown";r[@"apiSucceeded"]=@NO;
+        r[@"message"]=[NSString stringWithFormat:@"有 %lu 路结果未知；请核对微店订单，未重试",(unsigned long)unknowns];
     } else if(successes) {
         r[@"state"]=@"apiSucceeded";r[@"apiSucceeded"]=@YES;
         r[@"message"]=[NSString stringWithFormat:@"%lu 路创建接口返回成功；若服务端不去重可能生成多笔订单，请以微店订单列表为准",(unsigned long)successes];
@@ -481,7 +495,9 @@ static id WGSCloneConfirmation(id model) {
         void (^callback)(BOOL,id,id)=^(BOOL success,id response,id nativeError) {
             dispatch_async(dispatch_get_main_queue(),^{
                 if (lane.settled) return;
-                lane.settled=YES;lane.success=success&&!nativeError;++gReplies;
+                lane.settled=YES;lane.success=success&&!nativeError;
+                lane.outcome=lane.success?@"success":([WGSGet(nativeError,@"originError") isKindOfClass:NSError.class]?@"unknown":@"failed");
+                ++gReplies;
                 BOOL pending=NO;
                 for (WDGServiceLane *other in self.lanes) if(!other.settled) pending=YES;
                 [self emitAggregateTerminal:!pending];
@@ -505,7 +521,7 @@ static id WGSCloneConfirmation(id model) {
     if (!self.createStarted && !self.finished) { self.confirming=NO;[self stop:@"确认接口超时，未创建订单；迟到确认不会继续提交" state:@"failed"]; }
 }
 - (void)createTimedOut:(NSTimer *)timer {
-    if (!self.createStarted || self.finished) return;
+    if (!self.createStarted || self.finished || self.aggregateTimedOut) return;
     BOOL pending=NO;
     for (WDGServiceLane *lane in self.lanes) if(!lane.settled) pending=YES;
     if(!pending) return;

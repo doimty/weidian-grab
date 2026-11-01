@@ -178,7 +178,7 @@ static void WGCSyncLive(void) {
         id list=WGCControllerList(controller,&hasGetter);
         if(!list&&!hasGetter){list=gLiveList;if(list)gLiveSource=@"callback_weak_model";}
         if(list){gLiveList=list;gLiveReads++;WGCCollect(list,controller);}
-        else if(gCandidates.count){WGCEmptySnapshot();gReason=@"原生购物车模型已释放或当前 getter 为空，等待有效模型";}
+        else if(gCandidates.count){gReason=@"原生购物车模型暂不可读，沿用上次采集；刷新购物车后会更新";}
     } @finally {gSyncing=NO;}
 }
 static void WGCObserveFetch(id receiver,SEL command,BOOL success,id cartList) {

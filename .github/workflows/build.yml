@@ -34,23 +34,14 @@ jobs:
           find . -name "*.deb" -newermt "-10 minutes" | tee /tmp/debs.txt
           test -s /tmp/debs.txt
 
-      - name: Normalise architecture to iphoneos-arm64e
+      - name: Inspect package
         run: |
-          set -e
-          SRC="$(find .. -name '*.deb' -newermt '-20 minutes' | head -1)"
-          echo "source: $SRC"
-          dpkg-deb -I "$SRC" | head -20 || true
-          rm -rf pkgroot
-          dpkg-deb -R "$SRC" pkgroot
-          sed -i '' 's/^Architecture:.*/Architecture: iphoneos-arm64e/' pkgroot/DEBIAN/control
-          sed -i '' 's/^Depends:.*/Depends: mobilesubstrate, firmware (>= 15.0), roothide/' pkgroot/DEBIAN/control
-          cat pkgroot/DEBIAN/control
-          OUT="com.koudai.weidian.grab_0.1.0_iphoneos-arm64e.deb"
-          rm -f *.deb
-          dpkg-deb -b pkgroot "$OUT"
-          dpkg-deb -c "$OUT"
-          mkdir -p out && cp "$OUT" out/
-
+          DEB="$(find /tmp -name 'com.koudai.weidian.grab*.deb' -newermt '-10 minutes' | head -1)"
+          [ -z "$DEB" ] && DEB="$(find . -name '*.deb' -newermt '-10 minutes' | head -1)"
+          echo "deb: $DEB"
+          dpkg-deb -I "$DEB" | head -20
+          dpkg-deb -c "$DEB"
+          mkdir -p out && cp "$DEB" out/
       - uses: actions/upload-artifact@v4
         with:
           name: weidian-grab-deb

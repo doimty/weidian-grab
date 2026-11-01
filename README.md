@@ -1,4 +1,4 @@
-# WeidianGrab 0.5.1
+# WeidianGrab 0.5.2
 
 面向微店买家版 **7.9.62**（`com.koudai.weidian.buyer`）的 RootHide 插件。当前工作分支新增悬浮面板、白名单交易摘要以及前台单次定时任务；源码已完成本地 iOS ARM64 对象编译检查，实际双架构 deb 和手机 UI 测试仍需运行当前版本 CI 后验证。旧 0.4.x 的安装成功与新功能已验证是两回事。
 
@@ -36,7 +36,7 @@ App 活动、scene 就绪后显示“微助”悬浮球，可拖动、靠边吸�
 - `events.jsonl`：脱敏状态事件，约 1 MiB 轮转。
 - `report.json`：面板“导出诊断”的分享文件。
 
-旧的全局 JSON 配置与原始 Cookie 重放代码不再用于 0.5.1。旧 Frida 侦察脚本仅作历史调试资料。
+旧的全局 JSON 配置与原始 Cookie 重放代码不再用于 0.5.2。旧 Frida 侦察脚本仅作历史调试资料。
 
 ## 定时约束
 
@@ -57,8 +57,8 @@ CI 下载固定 SDK 归档并校验 SHA256。归档目录标签为 16.5，内部
 make clean
 make package THEOS_PACKAGE_SCHEME=roothide FINALPACKAGE=1
 python3 scripts/validate_deb.py \
-  packages/com.koudai.weidian.grab_0.5.1_iphoneos-arm64e.deb \
-  --version 0.5.1 --expected-sdk 16.4 --output manifest.json
+  packages/com.koudai.weidian.grab_0.5.2_iphoneos-arm64e.deb \
+  --version 0.5.2 --expected-sdk 16.4 --output manifest.json
 ```
 
 维护脚本只为本插件创建指向 `/usr/lib/DynamicPatches/AutoPatches.dylib` 的正确软链，绝不把插件复制为 `.roothidepatch`。不向 SpringBoard 注入，不改其他插件 filter。
@@ -70,4 +70,4 @@ CI 包含完整 build.log、toolchain.json、manifest.json 和精确版本的 de
 先安装新包并重开微店，在面板检查版本与 build ID。优先验证悬浮球、自然采集、5 秒演练、取消以及后台取消。调试不执行 `nativeOnce`，也不提交真实订单/付款。
 
 已完成：本地四模块 ARM64 对象编译、生产任务门控 15 条可执行断言、运行时存在性与部分 ABI、历史包验证器正反例。
-待完成：新 0.5.1 云端双架构链接/出包与手机 UI/自然采集/定时演练。
+待完成：新 0.5.2 云端双架构链接/出包与手机 UI/自然采集/定时演练。

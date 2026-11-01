@@ -1,9 +1,9 @@
 Package: com.koudai.weidian.grab
 Name: WeidianGrab
-Version: 0.1.0
+Version: 0.3.0
 Architecture: iphoneos-arm64e
-Description: 微店买家版抓包/抢单 tweak（NSURLSession + BoringSSL 双通路）
+Description: 微店买家版抓包/抢单 tweak（NSURLSession 抓取 + 重放，不依赖 substrate）
 Maintainer: dsh
 Author: dsh
 Section: Tweaks
-Depends: mobilesubstrate
+Depends: firmware (>= 15.0), roothide

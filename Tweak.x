@@ -227,8 +227,22 @@ static void grab_reload_cb(CFNotificationCenterRef c, void *o, CFStringRef n,
 
 #pragma mark - 构造
 
-__attribute__((constructor))
-static void grab_init(void) {
+// roothide 可能用手动映射加载 dylib，__attribute__((constructor)) 不保证执行；
+// ObjC 的 +load 由运行时在镜像装载时调用，更可靠。两条都留，用标志去重。
+static BOOL gInited = NO;
+static void grab_init_once(void);
+
+@interface WDGBootstrap : NSObject @end
+
+@implementation WDGBootstrap
++ (void)load {
+    grab_init_once();
+}
+@end
+
+static void grab_init_once(void) {
+    if (gInited) return;
+    gInited = YES;
     @autoreleasepool {
         gLock = [[NSLock alloc] init];
         grab_reload_conf();
@@ -240,4 +254,9 @@ static void grab_init(void) {
                                         CFSTR("com.koudai.weidian.grab/reload"),
                                         NULL, CFNotificationSuspensionBehaviorDeliverImmediately);
     }
+}
+
+__attribute__((constructor))
+static void grab_ctor(void) {
+    grab_init_once();
 }

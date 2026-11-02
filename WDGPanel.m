@@ -70,6 +70,9 @@ static NSDictionary *WDGSheetRow(NSString *label,NSString *value,BOOL mono) {ret
         [self addSubview:_scrim];
         _card=[UIView new];_card.translatesAutoresizingMaskIntoConstraints=NO;
         _card.backgroundColor=UIColor.systemBackgroundColor;
+        // Keep controls vivid: an alert-level overlay window can be treated as
+        // inactive, which desaturates switches and icons.
+        _card.tintAdjustmentMode=UIViewTintAdjustmentModeNormal;
         _card.layer.cornerRadius=kWDGCardRadius;_card.layer.cornerCurve=kCACornerCurveContinuous;
         _card.layer.shadowColor=UIColor.blackColor.CGColor;_card.layer.shadowOpacity=0.08;
         _card.layer.shadowRadius=18;_card.layer.shadowOffset=CGSizeMake(0,8);
@@ -246,6 +249,7 @@ static const CGFloat kWDGMenuCancelGap=8;
 @property(nonatomic,assign) BOOL destructive;
 @property(nonatomic,assign) BOOL enabled;
 @property(nonatomic,assign) BOOL isSwitch;
+@property(nonatomic,assign) BOOL showsChevron;
 @property(nonatomic,assign) BOOL switchOn;
 @property(nonatomic,copy) WDGSheetBlock action;
 @property(nonatomic,copy) void (^switchHandler)(BOOL on);
@@ -599,10 +603,24 @@ static const CGFloat kWDGMenuCancelGap=8;
         [overlay.topAnchor constraintEqualToAnchor:root.topAnchor],
         [overlay.bottomAnchor constraintEqualToAnchor:root.bottomAnchor]]];
     self.overlay=overlay;self.overlayBusy=NO;self.menuItems=nil;self.activeSheet=nil;
+    // Hide the panel card while a modal overlay is up: leaving the red primary
+    // button visible under the scrim reads as a second, clipped button.
+    self.card.hidden=YES;
     __weak WDGPanel *weakSelf=self;
     overlay.scrimAction=^{WDGPanel *panel=weakSelf;if(panel)[panel dismissOverlayWithAction:nil];};
     [root layoutIfNeeded];
     return overlay;
+}
+- (UIView *)navRowWithTitle:(NSString *)title tag:(NSInteger)tag {
+    WDGRowControl *row=[self menuRowWithTitle:title color:UIColor.labelColor checked:NO tag:tag];
+    UIImageSymbolConfiguration *config=[UIImageSymbolConfiguration configurationWithPointSize:13 weight:UIImageSymbolWeightSemibold];
+    UIImageView *chevron=[[UIImageView alloc] initWithImage:[UIImage systemImageNamed:@"chevron.right" withConfiguration:config]];
+    chevron.tintColor=UIColor.tertiaryLabelColor;chevron.translatesAutoresizingMaskIntoConstraints=NO;chevron.userInteractionEnabled=NO;
+    [row addSubview:chevron];
+    [NSLayoutConstraint activateConstraints:@[
+        [chevron.trailingAnchor constraintEqualToAnchor:row.trailingAnchor],
+        [chevron.centerYAnchor constraintEqualToAnchor:row.centerYAnchor]]];
+    return row;
 }
 - (UIView *)switchRowWithTitle:(NSString *)title on:(BOOL)on handler:(void (^)(BOOL on))handler {
     WDGRowControl *row=[WDGRowControl new];row.translatesAutoresizingMaskIntoConstraints=NO;
@@ -610,6 +628,7 @@ static const CGFloat kWDGMenuCancelGap=8;
     UILabel *label=[UILabel new];label.translatesAutoresizingMaskIntoConstraints=NO;label.userInteractionEnabled=NO;
     label.font=[UIFont systemFontOfSize:15 weight:UIFontWeightRegular];label.textColor=UIColor.labelColor;label.text=title;label.numberOfLines=1;
     WDGSwitch *toggle=[WDGSwitch new];toggle.translatesAutoresizingMaskIntoConstraints=NO;toggle.onTintColor=WDGSheetAccent();toggle.on=on;
+    toggle.tintAdjustmentMode=UIViewTintAdjustmentModeNormal;
     toggle.accessibilityLabel=title;
     __weak WDGSwitch *weakToggle=toggle;
     toggle.onToggle=^(BOOL value){if(handler)handler(value);if(weakToggle)[weakToggle setOn:value animated:YES];};
@@ -719,6 +738,7 @@ static const CGFloat kWDGMenuCancelGap=8;
         [items enumerateObjectsUsingBlock:^(WDGMenuItem *item,NSUInteger index,__unused BOOL *stop){
             if(index>0)[views addObject:[self menuHairline]];
             if(item.isSwitch){[views addObject:[self switchRowWithTitle:item.title on:item.switchOn handler:item.switchHandler]];return;}
+            if(item.showsChevron){[views addObject:[self navRowWithTitle:item.title tag:(NSInteger)index]];return;}
             WDGRowControl *row=[self menuRowWithTitle:item.title color:item.destructive?UIColor.systemRedColor:UIColor.labelColor checked:item.checked tag:(NSInteger)index];
             row.enabled=item.enabled;if(!item.enabled)row.alpha=0.4;
             [views addObject:row];
@@ -760,12 +780,14 @@ static const CGFloat kWDGMenuCancelGap=8;
         BOOL tornDown=overlay.tornDown;
         if(self.overlay==overlay)self.overlay=nil;
         self.overlayBusy=NO;self.activeSheet=nil;self.menuItems=nil;
+        self.card.hidden=NO;
         if(!tornDown&&action)action();
     }];
 }
 - (void)removeOverlayImmediately {
     WDGOverlayView *overlay=self.overlay;
     self.overlay=nil;self.overlayBusy=NO;self.activeSheet=nil;self.menuItems=nil;
+    self.card.hidden=NO;
     [self.datePicker removeFromSuperview];
     [overlay removeImmediately];
 }

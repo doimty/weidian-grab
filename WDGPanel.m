@@ -15,6 +15,14 @@ static const CGFloat kWDGButtonHeight=46;
 static const CGFloat kWDGButtonRadius=14;
 static const CGFloat kWDGCardMaxHeightRatio=0.72;
 static const CGFloat kWDGFooterHitHeight=44;
+static const CGFloat kWDGCardMaxWidth=376;
+static const CGFloat kWDGCardScreenMargin=32;
+static const CGFloat kWDGOverlayScrimAlpha=0.28;
+static const CGFloat kWDGOverlayScale=0.98;
+static const CGFloat kWDGOverlayDuration=0.18;
+static const CGFloat kWDGOverlayMaxHeightRatio=0.70;
+static const CGFloat kWDGTimeCardMaxHeightRatio=0.88;
+static const CGFloat kWDGOverlayVerticalBias=0.92;
 
 @interface WDGPassWindow : UIWindow @end
 @implementation WDGPassWindow
@@ -33,11 +41,83 @@ static const CGFloat kWDGFooterHitHeight=44;
 @end
 
 typedef void (^WDGSheetBlock)(void);
+typedef void (^WDGSheetCloseRequest)(WDGSheetBlock action);
 
 static UIColor *WDGSheetAccent(void) {return [UIColor colorWithRed:0.90 green:0.14 blue:0.30 alpha:1];}
 static NSDictionary *WDGSheetRow(NSString *label,NSString *value,BOOL mono) {return @{@"label":label?:@"",@"value":value?:@"",@"mono":@(mono)};}
 
-@interface WDGSheetController : UIViewController
+// 面板窗口内的浮层：全屏遮罩 + 与面板卡片同宽的居中卡片，菜单与确认框共用这一套视觉与动画。
+@interface WDGOverlayView : UIView
+@property(nonatomic,strong,readonly) UIView *card;
+@property(nonatomic,copy) void (^scrimAction)(void);
+@property(nonatomic,assign) BOOL tornDown;
+- (instancetype)initWithCardWidth:(CGFloat)width maxHeightRatio:(CGFloat)ratio;
+- (void)presentWithCompletion:(void (^)(void))completion;
+- (void)dismissWithCompletion:(void (^)(void))completion;
+- (void)removeImmediately;
+@end
+
+@implementation WDGOverlayView {
+    UIControl *_scrim;
+}
+- (instancetype)initWithCardWidth:(CGFloat)width maxHeightRatio:(CGFloat)ratio {
+    if((self=[super init])) {
+        self.translatesAutoresizingMaskIntoConstraints=NO;self.backgroundColor=UIColor.clearColor;self.accessibilityViewIsModal=YES;self.alpha=0;
+        _scrim=[UIControl new];_scrim.translatesAutoresizingMaskIntoConstraints=NO;
+        _scrim.backgroundColor=[UIColor.blackColor colorWithAlphaComponent:kWDGOverlayScrimAlpha];
+        _scrim.accessibilityLabel=@"关闭浮层";
+        [_scrim addTarget:self action:@selector(tapScrim) forControlEvents:UIControlEventTouchUpInside];
+        [self addSubview:_scrim];
+        _card=[UIView new];_card.translatesAutoresizingMaskIntoConstraints=NO;
+        _card.backgroundColor=UIColor.systemBackgroundColor;
+        _card.layer.cornerRadius=kWDGCardRadius;_card.layer.cornerCurve=kCACornerCurveContinuous;
+        _card.layer.shadowColor=UIColor.blackColor.CGColor;_card.layer.shadowOpacity=0.08;
+        _card.layer.shadowRadius=18;_card.layer.shadowOffset=CGSizeMake(0,8);
+        [self addSubview:_card];
+        UILayoutGuide *centerGuide=[UILayoutGuide new];[self addLayoutGuide:centerGuide];
+        [NSLayoutConstraint activateConstraints:@[
+            [_scrim.leadingAnchor constraintEqualToAnchor:self.leadingAnchor],
+            [_scrim.trailingAnchor constraintEqualToAnchor:self.trailingAnchor],
+            [_scrim.topAnchor constraintEqualToAnchor:self.topAnchor],
+            [_scrim.bottomAnchor constraintEqualToAnchor:self.bottomAnchor],
+            [centerGuide.topAnchor constraintEqualToAnchor:self.topAnchor],
+            [centerGuide.heightAnchor constraintEqualToAnchor:self.heightAnchor multiplier:kWDGOverlayVerticalBias],
+            [_card.centerXAnchor constraintEqualToAnchor:self.centerXAnchor],
+            [_card.centerYAnchor constraintEqualToAnchor:centerGuide.centerYAnchor],
+            [_card.widthAnchor constraintEqualToConstant:width],
+            [_card.topAnchor constraintGreaterThanOrEqualToAnchor:self.safeAreaLayoutGuide.topAnchor constant:16],
+            [_card.bottomAnchor constraintLessThanOrEqualToAnchor:self.safeAreaLayoutGuide.bottomAnchor constant:-16],
+            [_card.heightAnchor constraintLessThanOrEqualToAnchor:self.heightAnchor multiplier:ratio]]];
+    }
+    return self;
+}
+- (void)tapScrim {if(self.scrimAction)self.scrimAction();}
+- (void)presentWithCompletion:(void (^)(void))completion {
+    self.userInteractionEnabled=NO;self.alpha=0;
+    self.card.transform=CGAffineTransformMakeScale(kWDGOverlayScale,kWDGOverlayScale);
+    [UIView animateWithDuration:kWDGOverlayDuration delay:0 options:UIViewAnimationOptionCurveEaseOut animations:^{
+        self.alpha=1;self.card.transform=CGAffineTransformIdentity;
+    } completion:^(BOOL finished){self.userInteractionEnabled=YES;if(completion)completion();}];
+}
+- (void)dismissWithCompletion:(void (^)(void))completion {
+    self.userInteractionEnabled=NO;
+    [UIView animateWithDuration:kWDGOverlayDuration delay:0 options:UIViewAnimationOptionCurveEaseIn animations:^{
+        self.alpha=0;self.card.transform=CGAffineTransformMakeScale(kWDGOverlayScale,kWDGOverlayScale);
+    } completion:^(BOOL finished){
+        [self removeFromSuperview];
+        if(completion)completion();
+    }];
+}
+- (void)removeImmediately {
+    self.tornDown=YES;
+    [self.layer removeAllAnimations];[self.card.layer removeAllAnimations];
+    [self removeFromSuperview];
+}
+@end
+
+@interface WDGSheetController : NSObject {
+    UIView *_contentView;
+}
 @property(nonatomic,copy) NSString *sheetTitle;
 @property(nonatomic,copy) NSArray<NSDictionary *> *sheetRows;
 @property(nonatomic,copy) NSString *sheetFootnote;
@@ -46,6 +126,9 @@ static NSDictionary *WDGSheetRow(NSString *label,NSString *value,BOOL mono) {ret
 @property(nonatomic,copy) NSString *secondaryTitle;
 @property(nonatomic,copy) WDGSheetBlock primaryAction;
 @property(nonatomic,copy) WDGSheetBlock secondaryAction;
+@property(nonatomic,copy) WDGSheetCloseRequest requestClose;
+@property(nonatomic,strong,readonly) UIView *contentView;
+@property(nonatomic,assign) BOOL dismissed;
 + (instancetype)sheetWithTitle:(NSString *)title rows:(NSArray<NSDictionary *> *)rows footnote:(NSString *)footnote warning:(BOOL)warning primaryTitle:(NSString *)primaryTitle primaryAction:(WDGSheetBlock)primaryAction secondaryTitle:(NSString *)secondaryTitle;
 @end
 
@@ -54,21 +137,25 @@ static NSDictionary *WDGSheetRow(NSString *label,NSString *value,BOOL mono) {ret
     WDGSheetController *sheet=[self new];
     sheet.sheetTitle=title;sheet.sheetRows=rows;sheet.sheetFootnote=footnote;sheet.footnoteWarning=warning;
     sheet.primaryTitle=primaryTitle;sheet.primaryAction=primaryAction;sheet.secondaryTitle=secondaryTitle;
-    sheet.modalPresentationStyle=UIModalPresentationPageSheet;
     return sheet;
 }
-- (void)viewDidLoad {
-    [super viewDidLoad];
-    self.view.backgroundColor=UIColor.systemBackgroundColor;self.view.accessibilityIdentifier=@"WDG.Sheet";
+- (UIView *)contentView {
+    if(!_contentView)[self buildContentView];
+    return _contentView;
+}
+- (void)buildContentView {
+    UIView *root=[UIView new];root.translatesAutoresizingMaskIntoConstraints=NO;root.backgroundColor=UIColor.clearColor;
+    _contentView=root;
     UIScrollView *scroll=[UIScrollView new];scroll.translatesAutoresizingMaskIntoConstraints=NO;
     scroll.showsVerticalScrollIndicator=NO;scroll.showsHorizontalScrollIndicator=NO;scroll.alwaysBounceVertical=NO;scroll.alwaysBounceHorizontal=NO;
-    scroll.contentInsetAdjustmentBehavior=UIScrollViewContentInsetAdjustmentNever;[self.view addSubview:scroll];
-    UILayoutGuide *safe=self.view.safeAreaLayoutGuide;
+    scroll.contentInsetAdjustmentBehavior=UIScrollViewContentInsetAdjustmentNever;[root addSubview:scroll];
+    NSLayoutConstraint *fitsContent=[scroll.heightAnchor constraintEqualToAnchor:scroll.contentLayoutGuide.heightAnchor];fitsContent.priority=UILayoutPriorityDefaultHigh;
     [NSLayoutConstraint activateConstraints:@[
-        [scroll.leadingAnchor constraintEqualToAnchor:safe.leadingAnchor constant:kWDGPadding],
-        [scroll.trailingAnchor constraintEqualToAnchor:safe.trailingAnchor constant:-kWDGPadding],
-        [scroll.topAnchor constraintEqualToAnchor:safe.topAnchor constant:kWDGPadding],
-        [scroll.bottomAnchor constraintEqualToAnchor:safe.bottomAnchor constant:-kWDGPadding]]];
+        [scroll.leadingAnchor constraintEqualToAnchor:root.leadingAnchor constant:kWDGPadding],
+        [scroll.trailingAnchor constraintEqualToAnchor:root.trailingAnchor constant:-kWDGPadding],
+        [scroll.topAnchor constraintEqualToAnchor:root.topAnchor constant:kWDGPadding],
+        [scroll.bottomAnchor constraintEqualToAnchor:root.bottomAnchor constant:-kWDGPadding],
+        fitsContent]];
     UIStackView *stack=[UIStackView new];stack.axis=UILayoutConstraintAxisVertical;stack.spacing=12;stack.translatesAutoresizingMaskIntoConstraints=NO;[scroll addSubview:stack];
     [NSLayoutConstraint activateConstraints:@[
         [stack.leadingAnchor constraintEqualToAnchor:scroll.contentLayoutGuide.leadingAnchor],
@@ -131,19 +218,20 @@ static NSDictionary *WDGSheetRow(NSString *label,NSString *value,BOOL mono) {ret
     return box;
 }
 - (void)tapPrimary {
-    if(!self.view.window)return;
-    WDGSheetBlock action=[self.primaryAction copy];self.primaryAction=nil;self.view.userInteractionEnabled=NO;
-    [self dismissViewControllerAnimated:YES completion:^{if(action)action();}];
+    if(self.dismissed||!self.requestClose)return;
+    WDGSheetBlock action=[self.primaryAction copy];self.primaryAction=nil;self.secondaryAction=nil;
+    self.dismissed=YES;self.requestClose(action);
 }
 - (void)tapSecondary {
-    if(!self.view.window)return;
-    WDGSheetBlock action=[self.secondaryAction copy];self.secondaryAction=nil;self.view.userInteractionEnabled=NO;
-    [self dismissViewControllerAnimated:YES completion:^{if(action)action();}];
+    if(self.dismissed||!self.requestClose)return;
+    WDGSheetBlock action=[self.secondaryAction copy];self.primaryAction=nil;self.secondaryAction=nil;
+    self.dismissed=YES;self.requestClose(action);
 }
 @end
 
-static const CGFloat kWDGMenuRowHeight=48;
+static const CGFloat kWDGMenuRowHeight=52;
 static const CGFloat kWDGMenuCheckSide=16;
+static const CGFloat kWDGMenuCancelGap=8;
 
 @interface WDGMenuItem : NSObject
 @property(nonatomic,copy) NSString *title;
@@ -161,122 +249,7 @@ static const CGFloat kWDGMenuCheckSide=16;
 }
 @end
 
-@interface WDGMenuSheetController : UIViewController
-@property(nonatomic,copy) NSString *menuTitle;
-@property(nonatomic,copy) NSString *menuSubtitle;
-@property(nonatomic,copy) NSArray<WDGMenuItem *> *menuItems;
-@property(nonatomic,assign) BOOL menuDismissed;
-+ (instancetype)menuWithTitle:(NSString *)title subtitle:(NSString *)subtitle items:(NSArray<WDGMenuItem *> *)items;
-@end
-
-@implementation WDGMenuSheetController
-+ (instancetype)menuWithTitle:(NSString *)title subtitle:(NSString *)subtitle items:(NSArray<WDGMenuItem *> *)items {
-    WDGMenuSheetController *menu=[self new];
-    menu.menuTitle=title;menu.menuSubtitle=subtitle;menu.menuItems=[items copy];
-    menu.modalPresentationStyle=UIModalPresentationPageSheet;
-    return menu;
-}
-- (void)viewDidLoad {
-    [super viewDidLoad];
-    self.view.backgroundColor=UIColor.systemBackgroundColor;self.view.accessibilityIdentifier=@"WDG.Menu";
-    UILayoutGuide *safe=self.view.safeAreaLayoutGuide;
-    UIView *cancelBar=[UIView new];cancelBar.translatesAutoresizingMaskIntoConstraints=NO;[self.view addSubview:cancelBar];
-    UIView *cancelLine=[UIView new];cancelLine.translatesAutoresizingMaskIntoConstraints=NO;cancelLine.userInteractionEnabled=NO;
-    cancelLine.backgroundColor=[UIColor.separatorColor colorWithAlphaComponent:0.5];[cancelBar addSubview:cancelLine];
-    UIControl *cancelRow=[self menuRow:@"取消" color:UIColor.secondaryLabelColor checked:NO tag:-1];[cancelBar addSubview:cancelRow];
-    [NSLayoutConstraint activateConstraints:@[
-        [cancelBar.leadingAnchor constraintEqualToAnchor:self.view.leadingAnchor],
-        [cancelBar.trailingAnchor constraintEqualToAnchor:self.view.trailingAnchor],
-        [cancelBar.bottomAnchor constraintEqualToAnchor:safe.bottomAnchor],
-        [cancelBar.heightAnchor constraintEqualToConstant:kWDGHairlineHeight+kWDGMenuRowHeight],
-        [cancelLine.leadingAnchor constraintEqualToAnchor:cancelBar.leadingAnchor],
-        [cancelLine.trailingAnchor constraintEqualToAnchor:cancelBar.trailingAnchor],
-        [cancelLine.topAnchor constraintEqualToAnchor:cancelBar.topAnchor],
-        [cancelLine.heightAnchor constraintEqualToConstant:kWDGHairlineHeight],
-        [cancelRow.leadingAnchor constraintEqualToAnchor:cancelBar.leadingAnchor constant:kWDGPadding],
-        [cancelRow.trailingAnchor constraintEqualToAnchor:cancelBar.trailingAnchor constant:-kWDGPadding],
-        [cancelRow.topAnchor constraintEqualToAnchor:cancelLine.bottomAnchor],
-        [cancelRow.bottomAnchor constraintEqualToAnchor:cancelBar.bottomAnchor]]];
-    UIScrollView *scroll=[UIScrollView new];scroll.translatesAutoresizingMaskIntoConstraints=NO;
-    scroll.showsVerticalScrollIndicator=NO;scroll.showsHorizontalScrollIndicator=NO;scroll.alwaysBounceVertical=NO;scroll.alwaysBounceHorizontal=NO;
-    scroll.contentInsetAdjustmentBehavior=UIScrollViewContentInsetAdjustmentNever;[self.view addSubview:scroll];
-    [NSLayoutConstraint activateConstraints:@[
-        [scroll.leadingAnchor constraintEqualToAnchor:safe.leadingAnchor constant:kWDGPadding],
-        [scroll.trailingAnchor constraintEqualToAnchor:safe.trailingAnchor constant:-kWDGPadding],
-        [scroll.topAnchor constraintEqualToAnchor:safe.topAnchor constant:kWDGPadding],
-        [scroll.bottomAnchor constraintEqualToAnchor:cancelBar.topAnchor constant:-kWDGSectionGap]]];
-    UIStackView *stack=[UIStackView new];stack.axis=UILayoutConstraintAxisVertical;stack.spacing=0;stack.translatesAutoresizingMaskIntoConstraints=NO;[scroll addSubview:stack];
-    [NSLayoutConstraint activateConstraints:@[
-        [stack.leadingAnchor constraintEqualToAnchor:scroll.contentLayoutGuide.leadingAnchor],
-        [stack.trailingAnchor constraintEqualToAnchor:scroll.contentLayoutGuide.trailingAnchor],
-        [stack.topAnchor constraintEqualToAnchor:scroll.contentLayoutGuide.topAnchor],
-        [stack.bottomAnchor constraintEqualToAnchor:scroll.contentLayoutGuide.bottomAnchor],
-        [stack.widthAnchor constraintEqualToAnchor:scroll.frameLayoutGuide.widthAnchor]]];
-    UILabel *title=[UILabel new];title.translatesAutoresizingMaskIntoConstraints=NO;title.font=[UIFont systemFontOfSize:17 weight:UIFontWeightSemibold];title.textColor=UIColor.labelColor;title.numberOfLines=0;title.text=self.menuTitle;
-    [stack addArrangedSubview:title];[stack setCustomSpacing:self.menuSubtitle.length?6:14 afterView:title];
-    if(self.menuSubtitle.length){
-        UILabel *subtitle=[UILabel new];subtitle.translatesAutoresizingMaskIntoConstraints=NO;subtitle.font=[UIFont systemFontOfSize:12 weight:UIFontWeightRegular];
-        subtitle.textColor=UIColor.secondaryLabelColor;subtitle.numberOfLines=0;subtitle.text=self.menuSubtitle;
-        [stack addArrangedSubview:subtitle];[stack setCustomSpacing:12 afterView:subtitle];
-    }
-    if(self.menuItems.count){
-        NSMutableArray<UIView *> *views=[NSMutableArray array];
-        for(NSUInteger index=0;index<self.menuItems.count;index++){
-            WDGMenuItem *item=self.menuItems[index];
-            if(index>0)[views addObject:[self menuHairline]];
-            UIControl *row=[self menuRow:item.title color:item.destructive?UIColor.systemRedColor:UIColor.labelColor checked:item.checked tag:(NSInteger)index];
-            row.enabled=item.enabled;if(!item.enabled)row.alpha=0.4;
-            [views addObject:row];
-        }
-        UIStackView *rows=[[UIStackView alloc] initWithArrangedSubviews:views];rows.axis=UILayoutConstraintAxisVertical;rows.spacing=0;rows.translatesAutoresizingMaskIntoConstraints=NO;
-        [stack addArrangedSubview:rows];
-    }
-}
-- (UIView *)menuHairline {
-    UIView *line=[UIView new];line.translatesAutoresizingMaskIntoConstraints=NO;line.userInteractionEnabled=NO;
-    line.backgroundColor=[UIColor.separatorColor colorWithAlphaComponent:0.5];
-    [line.heightAnchor constraintEqualToConstant:kWDGHairlineHeight].active=YES;return line;
-}
-- (UIControl *)menuRow:(NSString *)title color:(UIColor *)color checked:(BOOL)checked tag:(NSInteger)tag {
-    WDGRowControl *row=[WDGRowControl new];row.translatesAutoresizingMaskIntoConstraints=NO;row.tag=tag;
-    row.layer.cornerRadius=10;row.layer.cornerCurve=kCACornerCurveContinuous;row.layer.masksToBounds=YES;
-    row.accessibilityLabel=title;row.accessibilityIdentifier=tag<0?@"WDG.MenuCancel":[NSString stringWithFormat:@"WDG.MenuRow.%ld",(long)tag];
-    UILabel *label=[UILabel new];label.translatesAutoresizingMaskIntoConstraints=NO;label.userInteractionEnabled=NO;
-    label.font=[UIFont systemFontOfSize:15 weight:UIFontWeightRegular];label.textColor=color;label.text=title;
-    label.numberOfLines=2;label.lineBreakMode=NSLineBreakByTruncatingTail;[row addSubview:label];
-    NSMutableArray<NSLayoutConstraint *> *rules=[NSMutableArray arrayWithObjects:
-        [label.leadingAnchor constraintEqualToAnchor:row.leadingAnchor],
-        [label.centerYAnchor constraintEqualToAnchor:row.centerYAnchor],
-        [label.topAnchor constraintGreaterThanOrEqualToAnchor:row.topAnchor constant:11],
-        [label.bottomAnchor constraintLessThanOrEqualToAnchor:row.bottomAnchor constant:-11],
-        [row.heightAnchor constraintGreaterThanOrEqualToConstant:kWDGMenuRowHeight],nil];
-    UIView *right=nil;
-    if(checked){
-        UIImageSymbolConfiguration *config=[UIImageSymbolConfiguration configurationWithPointSize:15 weight:UIImageSymbolWeightSemibold];
-        UIImageView *check=[[UIImageView alloc] initWithImage:[UIImage systemImageNamed:@"checkmark" withConfiguration:config]];
-        check.tintColor=WDGSheetAccent();check.contentMode=UIViewContentModeScaleAspectFit;check.translatesAutoresizingMaskIntoConstraints=NO;check.userInteractionEnabled=NO;[row addSubview:check];
-        [rules addObjectsFromArray:@[[check.trailingAnchor constraintEqualToAnchor:row.trailingAnchor],[check.centerYAnchor constraintEqualToAnchor:row.centerYAnchor],[check.widthAnchor constraintEqualToConstant:kWDGMenuCheckSide],[check.heightAnchor constraintEqualToConstant:kWDGMenuCheckSide]]];
-        right=check;
-    }
-    if(right)[rules addObject:[label.trailingAnchor constraintLessThanOrEqualToAnchor:right.leadingAnchor constant:-10]];
-    else [rules addObject:[label.trailingAnchor constraintLessThanOrEqualToAnchor:row.trailingAnchor]];
-    [NSLayoutConstraint activateConstraints:rules];
-    [row addTarget:self action:@selector(tapMenuRow:) forControlEvents:UIControlEventTouchUpInside];
-    return row;
-}
-- (void)tapMenuRow:(WDGRowControl *)sender {
-    if(self.menuDismissed||!self.view.window||!sender.enabled)return;
-    NSInteger index=sender.tag;
-    if(index>=0&&(NSUInteger)index>=self.menuItems.count)return;
-    WDGMenuItem *item=index>=0?self.menuItems[(NSUInteger)index]:nil;
-    if(item&&!item.enabled)return;
-    WDGSheetBlock action=[item.action copy];
-    self.menuDismissed=YES;self.view.userInteractionEnabled=NO;
-    [self dismissViewControllerAnimated:YES completion:^{if(action)action();}];
-}
-@end
-
-@interface WDGPanel : NSObject <UIAdaptivePresentationControllerDelegate>
+@interface WDGPanel : NSObject
 @property(nonatomic,strong) WDGPassWindow *window;
 @property(nonatomic,weak) UIWindow *previousKey;
 @property(nonatomic,strong) UIButton *bubble;
@@ -295,13 +268,20 @@ static const CGFloat kWDGMenuCheckSide=16;
 @property(nonatomic,strong) UIControl *timeButton;
 @property(nonatomic,strong) UILabel *timeValue;
 @property(nonatomic,strong) NSDate *dateBeforeEditing;
-@property(nonatomic,strong) UIViewController *timeSheet;
 @property(nonatomic,strong) UITextField *maximumAmount;
 @property(nonatomic,strong) UIButton *primaryButton;
 @property(nonatomic,strong) UIButton *cancelButton;
 @property(nonatomic,strong) NSTimer *refreshTimer;
 @property(nonatomic,assign) NSUInteger concurrentLanes;
+@property(nonatomic,strong) WDGOverlayView *overlay;
+@property(nonatomic,assign) BOOL overlayBusy;
+@property(nonatomic,copy) NSArray<WDGMenuItem *> *menuItems;
+@property(nonatomic,strong) WDGSheetController *activeSheet;
 + (instancetype)shared;
+- (void)presentSheet:(WDGSheetController *)sheet;
+- (void)presentMenuWithTitle:(NSString *)title subtitle:(NSString *)subtitle items:(NSArray<WDGMenuItem *> *)items;
+- (void)dismissOverlayWithAction:(WDGSheetBlock)action;
+- (void)removeOverlayImmediately;
 @end
 @implementation WDGPanel
 + (instancetype)shared {static WDGPanel *p;static dispatch_once_t once;dispatch_once(&once,^{p=[self new];});return p;}
@@ -423,7 +403,7 @@ static const CGFloat kWDGMenuCheckSide=16;
 }
 - (void)togglePanel {if(self.card&&!self.card.hidden)[self closePanel];else [self openPanel];}
 - (void)openPanel {
-    [self ensureWindow];if(!self.window)return;WDGRefreshTradeSnapshot();
+    [self ensureWindow];if(!self.window)return;[self removeOverlayImmediately];WDGRefreshTradeSnapshot();
     [WDGCore.shared refreshServerClock];
     for(UIWindow *w in self.window.windowScene.windows)if(w.isKeyWindow&&w!=self.window)self.previousKey=w;
     if(!self.previousKey){id<UIApplicationDelegate> d=UIApplication.sharedApplication.delegate;if([d respondsToSelector:@selector(window)])self.previousKey=d.window;}
@@ -435,9 +415,10 @@ static const CGFloat kWDGMenuCheckSide=16;
     [NSRunLoop.mainRunLoop addTimer:self.refreshTimer forMode:NSRunLoopCommonModes];[self refresh];
 }
 - (void)closePanel {
+    [self removeOverlayImmediately];
     [self.card endEditing:YES];
     if(self.dateBeforeEditing){self.datePicker.date=self.dateBeforeEditing;self.dateBeforeEditing=nil;}
-    [self.window.rootViewController dismissViewControllerAnimated:NO completion:nil];self.timeSheet=nil;
+    [self.window.rootViewController dismissViewControllerAnimated:NO completion:nil];
     self.card.hidden=YES;self.scrim.hidden=YES;self.bubble.hidden=NO;
     [self.refreshTimer invalidate];self.refreshTimer=nil;[self.previousKey makeKeyWindow];self.previousKey=nil;
 }
@@ -449,7 +430,7 @@ static const CGFloat kWDGMenuCheckSide=16;
     self.card=[UIView new];self.card.backgroundColor=UIColor.systemBackgroundColor;self.card.layer.cornerRadius=kWDGCardRadius;self.card.layer.cornerCurve=kCACornerCurveContinuous;
     self.card.layer.shadowColor=UIColor.blackColor.CGColor;self.card.layer.shadowOpacity=0.10;self.card.layer.shadowRadius=26;self.card.layer.shadowOffset=CGSizeMake(0,12);
     self.card.translatesAutoresizingMaskIntoConstraints=NO;[root addSubview:self.card];
-    CGFloat width=MIN(376,self.window.bounds.size.width-32);
+    CGFloat width=MIN(kWDGCardMaxWidth,self.window.bounds.size.width-kWDGCardScreenMargin);
     [NSLayoutConstraint activateConstraints:@[[self.card.centerXAnchor constraintEqualToAnchor:root.centerXAnchor],[self.card.centerYAnchor constraintEqualToAnchor:root.centerYAnchor],[self.card.widthAnchor constraintEqualToConstant:width],[self.card.topAnchor constraintGreaterThanOrEqualToAnchor:root.topAnchor constant:16],[self.card.bottomAnchor constraintLessThanOrEqualToAnchor:root.bottomAnchor constant:-16]]];
     UIScrollView *scroll=[UIScrollView new];scroll.translatesAutoresizingMaskIntoConstraints=NO;scroll.showsVerticalScrollIndicator=NO;scroll.alwaysBounceVertical=NO;scroll.keyboardDismissMode=UIScrollViewKeyboardDismissModeInteractive;scroll.contentInsetAdjustmentBehavior=UIScrollViewContentInsetAdjustmentNever;[self.card addSubview:scroll];
     [NSLayoutConstraint activateConstraints:@[[scroll.leadingAnchor constraintEqualToAnchor:self.card.leadingAnchor constant:kWDGPadding],[scroll.trailingAnchor constraintEqualToAnchor:self.card.trailingAnchor constant:-kWDGPadding],[scroll.topAnchor constraintEqualToAnchor:self.card.topAnchor constant:kWDGPadding],[scroll.bottomAnchor constraintEqualToAnchor:self.card.bottomAnchor constant:-kWDGPadding]]];
@@ -514,27 +495,51 @@ static const CGFloat kWDGMenuCheckSide=16;
     self.timeValue.text=[NSString stringWithFormat:@"%@ %@",day,clock];self.timeButton.accessibilityLabel=[NSString stringWithFormat:@"开抢时间，%@，精确到整分钟",self.timeValue.text];
 }
 - (void)showTimePicker {
-    if(!self.timeButton.enabled||self.timeSheet)return;[self endEditing];self.dateBeforeEditing=self.datePicker.date;
-    UIViewController *sheet=[UIViewController new];self.timeSheet=sheet;sheet.modalPresentationStyle=UIModalPresentationPageSheet;sheet.view.backgroundColor=UIColor.systemBackgroundColor;sheet.preferredContentSize=CGSizeMake(376,360);
-    UIButton *cancel=[UIButton buttonWithType:UIButtonTypeSystem];[cancel setTitle:@"取消" forState:UIControlStateNormal];cancel.tintColor=UIColor.secondaryLabelColor;[cancel addTarget:self action:@selector(cancelTimePicker) forControlEvents:UIControlEventTouchUpInside];
-    UIButton *done=[UIButton buttonWithType:UIButtonTypeSystem];[done setTitle:@"完成" forState:UIControlStateNormal];done.titleLabel.font=[UIFont systemFontOfSize:17 weight:UIFontWeightSemibold];done.tintColor=[self accent];[done addTarget:self action:@selector(finishTimePicker) forControlEvents:UIControlEventTouchUpInside];
-    UILabel *title=[self label:17 weight:UIFontWeightSemibold];title.text=@"选择开抢时间";title.textAlignment=NSTextAlignmentCenter;
-    [cancel.widthAnchor constraintEqualToConstant:48].active=YES;[done.widthAnchor constraintEqualToConstant:48].active=YES;
-    UIStackView *header=[[UIStackView alloc] initWithArrangedSubviews:@[cancel,title,done]];header.axis=UILayoutConstraintAxisHorizontal;header.alignment=UIStackViewAlignmentCenter;header.spacing=8;header.translatesAutoresizingMaskIntoConstraints=NO;[sheet.view addSubview:header];
-    UILabel *hint=[self label:12 weight:UIFontWeightRegular];hint.text=[NSString stringWithFormat:@"公告时刻 · %@ · 秒为 00",(self.datePicker.timeZone?:NSTimeZone.localTimeZone).name];hint.textColor=UIColor.secondaryLabelColor;hint.textAlignment=NSTextAlignmentCenter;hint.translatesAutoresizingMaskIntoConstraints=NO;[sheet.view addSubview:hint];
-    [self.datePicker removeFromSuperview];self.datePicker.translatesAutoresizingMaskIntoConstraints=NO;[sheet.view addSubview:self.datePicker];
-    [NSLayoutConstraint activateConstraints:@[[header.leadingAnchor constraintEqualToAnchor:sheet.view.leadingAnchor constant:20],[header.trailingAnchor constraintEqualToAnchor:sheet.view.trailingAnchor constant:-20],[header.topAnchor constraintEqualToAnchor:sheet.view.safeAreaLayoutGuide.topAnchor constant:18],[header.heightAnchor constraintEqualToConstant:40],[hint.topAnchor constraintEqualToAnchor:header.bottomAnchor constant:6],[hint.leadingAnchor constraintEqualToAnchor:header.leadingAnchor],[hint.trailingAnchor constraintEqualToAnchor:header.trailingAnchor],[self.datePicker.topAnchor constraintEqualToAnchor:hint.bottomAnchor constant:12],[self.datePicker.leadingAnchor constraintEqualToAnchor:sheet.view.leadingAnchor constant:12],[self.datePicker.trailingAnchor constraintEqualToAnchor:sheet.view.trailingAnchor constant:-12],[self.datePicker.heightAnchor constraintEqualToConstant:216]]];
-    UISheetPresentationController *presentation=sheet.sheetPresentationController;presentation.detents=@[UISheetPresentationControllerDetent.mediumDetent];presentation.prefersGrabberVisible=YES;presentation.preferredCornerRadius=28.0;sheet.presentationController.delegate=self;
-    [self.window.rootViewController presentViewController:sheet animated:YES completion:nil];
+    if(!self.timeButton.enabled||self.overlay||self.overlayBusy)return;
+    [self endEditing];self.dateBeforeEditing=self.datePicker.date;
+    WDGOverlayView *overlay=[self beginOverlayWithIdentifier:@"WDG.TimePicker" maxHeightRatio:kWDGTimeCardMaxHeightRatio];
+    if(!overlay){self.dateBeforeEditing=nil;return;}
+    __weak WDGPanel *weakSelf=self;
+    overlay.scrimAction=^{WDGPanel *panel=weakSelf;if(panel)[panel cancelTimePicker];};
+    UIView *card=overlay.card;
+    UIStackView *stack=[UIStackView new];stack.axis=UILayoutConstraintAxisVertical;stack.spacing=12;stack.translatesAutoresizingMaskIntoConstraints=NO;[card addSubview:stack];
+    NSLayoutConstraint *fitsContent=[stack.bottomAnchor constraintEqualToAnchor:card.bottomAnchor constant:-kWDGPadding];fitsContent.priority=UILayoutPriorityDefaultHigh;
+    [NSLayoutConstraint activateConstraints:@[
+        [stack.leadingAnchor constraintEqualToAnchor:card.leadingAnchor constant:kWDGPadding],
+        [stack.trailingAnchor constraintEqualToAnchor:card.trailingAnchor constant:-kWDGPadding],
+        [stack.topAnchor constraintEqualToAnchor:card.topAnchor constant:kWDGPadding],
+        [stack.bottomAnchor constraintLessThanOrEqualToAnchor:card.bottomAnchor constant:-kWDGPadding],
+        fitsContent]];
+    UILabel *title=[self label:17 weight:UIFontWeightSemibold];title.text=@"选择开抢时间";title.textAlignment=NSTextAlignmentCenter;title.numberOfLines=0;[stack addArrangedSubview:title];
+    [stack setCustomSpacing:6 afterView:title];
+    UILabel *hint=[self label:12 weight:UIFontWeightRegular];hint.text=@"本地时间 · 精确到整分钟（秒为 00）";hint.textColor=UIColor.secondaryLabelColor;hint.textAlignment=NSTextAlignmentCenter;hint.numberOfLines=0;[stack addArrangedSubview:hint];
+    [stack setCustomSpacing:10 afterView:hint];
+    [self.datePicker removeFromSuperview];self.datePicker.translatesAutoresizingMaskIntoConstraints=NO;
+    self.datePicker.datePickerMode=UIDatePickerModeDateAndTime;self.datePicker.preferredDatePickerStyle=UIDatePickerStyleWheels;self.datePicker.minuteInterval=1;
+    [stack addArrangedSubview:self.datePicker];[self.datePicker.heightAnchor constraintEqualToConstant:216].active=YES;
+    [stack setCustomSpacing:16 afterView:self.datePicker];
+    UIButton *done=[UIButton buttonWithType:UIButtonTypeSystem];done.translatesAutoresizingMaskIntoConstraints=NO;
+    done.backgroundColor=[self accent];done.layer.cornerRadius=kWDGButtonRadius;done.layer.cornerCurve=kCACornerCurveContinuous;done.clipsToBounds=YES;
+    [done setTitle:@"完成" forState:UIControlStateNormal];[done setTitleColor:UIColor.whiteColor forState:UIControlStateNormal];done.titleLabel.font=[UIFont systemFontOfSize:16 weight:UIFontWeightSemibold];
+    [done.heightAnchor constraintEqualToConstant:kWDGButtonHeight].active=YES;
+    [done addTarget:self action:@selector(finishTimePicker) forControlEvents:UIControlEventTouchUpInside];[stack addArrangedSubview:done];
+    UIButton *cancel=[UIButton buttonWithType:UIButtonTypeSystem];cancel.translatesAutoresizingMaskIntoConstraints=NO;cancel.tintColor=UIColor.secondaryLabelColor;
+    [cancel setTitle:@"取消" forState:UIControlStateNormal];cancel.titleLabel.font=[UIFont systemFontOfSize:15 weight:UIFontWeightRegular];
+    [cancel.heightAnchor constraintEqualToConstant:40].active=YES;
+    [cancel addTarget:self action:@selector(cancelTimePicker) forControlEvents:UIControlEventTouchUpInside];[stack addArrangedSubview:cancel];
+    [self.window.rootViewController.view layoutIfNeeded];
+    [overlay presentWithCompletion:nil];
 }
 - (void)cancelTimePicker {
-    if(self.dateBeforeEditing)self.datePicker.date=self.dateBeforeEditing;self.dateBeforeEditing=nil;[self updateTimeDisplay];[self.timeSheet dismissViewControllerAnimated:YES completion:nil];self.timeSheet=nil;
+    if(!self.overlay||self.overlayBusy)return;
+    if(self.dateBeforeEditing)self.datePicker.date=self.dateBeforeEditing;
+    self.dateBeforeEditing=nil;[self updateTimeDisplay];
+    [self dismissOverlayWithAction:^{[self.datePicker removeFromSuperview];}];
 }
 - (void)finishTimePicker {
-    self.datePicker.date=[self selectedMinute];self.dateBeforeEditing=nil;[self updateTimeDisplay];[self.timeSheet dismissViewControllerAnimated:YES completion:nil];self.timeSheet=nil;
-}
-- (void)presentationControllerDidDismiss:(UIPresentationController *)presentationController {
-    if(presentationController.presentedViewController==self.timeSheet){if(self.dateBeforeEditing)self.datePicker.date=self.dateBeforeEditing;self.dateBeforeEditing=nil;self.timeSheet=nil;[self updateTimeDisplay];}
+    if(!self.overlay||self.overlayBusy)return;
+    self.datePicker.date=[self selectedMinute];self.dateBeforeEditing=nil;[self updateTimeDisplay];
+    [self dismissOverlayWithAction:^{[self.datePicker removeFromSuperview];}];
 }
 - (void)refresh {
     if(!self.card)return;
@@ -561,17 +566,167 @@ static const CGFloat kWDGMenuCheckSide=16;
     NSString *line=[[(message?:@"") stringByReplacingOccurrencesOfString:@"\n" withString:@" "] stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
     UIAlertController *a=[UIAlertController alertControllerWithTitle:title message:line preferredStyle:UIAlertControllerStyleAlert];[a addAction:[UIAlertAction actionWithTitle:@"知道了" style:UIAlertActionStyleDefault handler:nil]];[self.window.rootViewController presentViewController:a animated:YES completion:nil];
 }
-- (void)presentSheet:(WDGSheetController *)sheet {
-    UISheetPresentationController *presentation=sheet.sheetPresentationController;
-    presentation.detents=@[UISheetPresentationControllerDetent.mediumDetent];
-    presentation.prefersGrabberVisible=YES;presentation.preferredCornerRadius=kWDGCardRadius;
-    [self.window.rootViewController presentViewController:sheet animated:YES completion:nil];
+- (CGFloat)overlayCardWidth {
+    CGFloat width=CGRectGetWidth(self.card.bounds);
+    if(!(width>0))width=MIN(kWDGCardMaxWidth,self.window.bounds.size.width-kWDGCardScreenMargin);
+    return width;
 }
-- (void)presentMenu:(UIViewController *)menu {
-    UISheetPresentationController *presentation=menu.sheetPresentationController;
-    presentation.detents=@[UISheetPresentationControllerDetent.mediumDetent];
-    presentation.prefersGrabberVisible=YES;presentation.preferredCornerRadius=kWDGCardRadius;
-    [self.window.rootViewController presentViewController:menu animated:YES completion:nil];
+- (WDGOverlayView *)beginOverlayWithIdentifier:(NSString *)identifier {
+    return [self beginOverlayWithIdentifier:identifier maxHeightRatio:kWDGOverlayMaxHeightRatio];
+}
+- (WDGOverlayView *)beginOverlayWithIdentifier:(NSString *)identifier maxHeightRatio:(CGFloat)ratio {
+    if(self.overlay||self.overlayBusy)return nil;
+    UIView *root=self.window.rootViewController.view;if(!root)return nil;
+    WDGOverlayView *overlay=[[WDGOverlayView alloc] initWithCardWidth:[self overlayCardWidth] maxHeightRatio:ratio];
+    overlay.accessibilityIdentifier=identifier;[root addSubview:overlay];
+    [NSLayoutConstraint activateConstraints:@[
+        [overlay.leadingAnchor constraintEqualToAnchor:root.leadingAnchor],
+        [overlay.trailingAnchor constraintEqualToAnchor:root.trailingAnchor],
+        [overlay.topAnchor constraintEqualToAnchor:root.topAnchor],
+        [overlay.bottomAnchor constraintEqualToAnchor:root.bottomAnchor]]];
+    self.overlay=overlay;self.overlayBusy=NO;self.menuItems=nil;self.activeSheet=nil;
+    __weak WDGPanel *weakSelf=self;
+    overlay.scrimAction=^{WDGPanel *panel=weakSelf;if(panel)[panel dismissOverlayWithAction:nil];};
+    [root layoutIfNeeded];
+    return overlay;
+}
+- (UIView *)menuHairline {
+    UIView *line=[UIView new];line.translatesAutoresizingMaskIntoConstraints=NO;line.userInteractionEnabled=NO;
+    line.backgroundColor=[UIColor.separatorColor colorWithAlphaComponent:0.5];
+    [line.heightAnchor constraintEqualToConstant:kWDGHairlineHeight].active=YES;return line;
+}
+- (WDGRowControl *)menuRowWithTitle:(NSString *)title color:(UIColor *)color checked:(BOOL)checked tag:(NSInteger)tag {
+    WDGRowControl *row=[WDGRowControl new];row.translatesAutoresizingMaskIntoConstraints=NO;row.tag=tag;
+    row.layer.cornerRadius=10;row.layer.cornerCurve=kCACornerCurveContinuous;row.layer.masksToBounds=YES;
+    row.accessibilityLabel=title;row.accessibilityIdentifier=tag<0?@"WDG.MenuCancel":[NSString stringWithFormat:@"WDG.MenuRow.%ld",(long)tag];
+    UILabel *label=[UILabel new];label.translatesAutoresizingMaskIntoConstraints=NO;label.userInteractionEnabled=NO;
+    label.font=[UIFont systemFontOfSize:15 weight:UIFontWeightRegular];label.textColor=color;label.text=title;
+    label.numberOfLines=2;label.lineBreakMode=NSLineBreakByTruncatingTail;[row addSubview:label];
+    NSMutableArray<NSLayoutConstraint *> *rules=[NSMutableArray arrayWithObjects:
+        [label.leadingAnchor constraintEqualToAnchor:row.leadingAnchor],
+        [label.centerYAnchor constraintEqualToAnchor:row.centerYAnchor],
+        [label.topAnchor constraintGreaterThanOrEqualToAnchor:row.topAnchor constant:6],
+        [label.bottomAnchor constraintLessThanOrEqualToAnchor:row.bottomAnchor constant:-6],
+        [row.heightAnchor constraintEqualToConstant:kWDGMenuRowHeight],nil];
+    UIView *right=nil;
+    if(checked){
+        UIImageSymbolConfiguration *config=[UIImageSymbolConfiguration configurationWithPointSize:15 weight:UIImageSymbolWeightSemibold];
+        UIImageView *check=[[UIImageView alloc] initWithImage:[UIImage systemImageNamed:@"checkmark" withConfiguration:config]];
+        check.tintColor=WDGSheetAccent();check.contentMode=UIViewContentModeScaleAspectFit;check.translatesAutoresizingMaskIntoConstraints=NO;check.userInteractionEnabled=NO;[row addSubview:check];
+        [rules addObjectsFromArray:@[[check.trailingAnchor constraintEqualToAnchor:row.trailingAnchor],[check.centerYAnchor constraintEqualToAnchor:row.centerYAnchor],[check.widthAnchor constraintEqualToConstant:kWDGMenuCheckSide],[check.heightAnchor constraintEqualToConstant:kWDGMenuCheckSide]]];
+        right=check;
+    }
+    if(right)[rules addObject:[label.trailingAnchor constraintLessThanOrEqualToAnchor:right.leadingAnchor constant:-10]];
+    else [rules addObject:[label.trailingAnchor constraintLessThanOrEqualToAnchor:row.trailingAnchor]];
+    [NSLayoutConstraint activateConstraints:rules];
+    [row addTarget:self action:@selector(menuRowTapped:) forControlEvents:UIControlEventTouchUpInside];
+    return row;
+}
+- (void)menuRowTapped:(WDGRowControl *)sender {
+    if(self.overlayBusy||!self.overlay||!sender.enabled)return;
+    NSInteger index=sender.tag;WDGMenuItem *item=nil;
+    if(index>=0){
+        if((NSUInteger)index>=self.menuItems.count)return;
+        item=self.menuItems[(NSUInteger)index];
+        if(!item.enabled)return;
+    }
+    WDGSheetBlock action=[item.action copy];
+    [self dismissOverlayWithAction:action];
+}
+- (void)installMenuTitle:(NSString *)title subtitle:(NSString *)subtitle items:(NSArray<WDGMenuItem *> *)items inCard:(UIView *)card {
+    UIScrollView *scroll=[UIScrollView new];scroll.translatesAutoresizingMaskIntoConstraints=NO;
+    scroll.showsVerticalScrollIndicator=NO;scroll.showsHorizontalScrollIndicator=NO;scroll.alwaysBounceVertical=NO;scroll.alwaysBounceHorizontal=NO;
+    scroll.contentInsetAdjustmentBehavior=UIScrollViewContentInsetAdjustmentNever;[card addSubview:scroll];
+    UIView *cancelBar=[UIView new];cancelBar.translatesAutoresizingMaskIntoConstraints=NO;[card addSubview:cancelBar];
+    UIView *cancelLine=[UIView new];cancelLine.translatesAutoresizingMaskIntoConstraints=NO;cancelLine.userInteractionEnabled=NO;
+    cancelLine.backgroundColor=[UIColor.separatorColor colorWithAlphaComponent:0.5];[cancelBar addSubview:cancelLine];
+    WDGRowControl *cancelRow=[self menuRowWithTitle:@"取消" color:UIColor.secondaryLabelColor checked:NO tag:-1];[cancelBar addSubview:cancelRow];
+    NSLayoutConstraint *fitsContent=[scroll.heightAnchor constraintEqualToAnchor:scroll.contentLayoutGuide.heightAnchor];fitsContent.priority=UILayoutPriorityDefaultHigh;
+    [NSLayoutConstraint activateConstraints:@[
+        [scroll.leadingAnchor constraintEqualToAnchor:card.leadingAnchor constant:kWDGPadding],
+        [scroll.trailingAnchor constraintEqualToAnchor:card.trailingAnchor constant:-kWDGPadding],
+        [scroll.topAnchor constraintEqualToAnchor:card.topAnchor constant:kWDGPadding],
+        [scroll.bottomAnchor constraintEqualToAnchor:cancelBar.topAnchor constant:-kWDGMenuCancelGap],
+        [cancelBar.leadingAnchor constraintEqualToAnchor:card.leadingAnchor],
+        [cancelBar.trailingAnchor constraintEqualToAnchor:card.trailingAnchor],
+        [cancelBar.bottomAnchor constraintEqualToAnchor:card.bottomAnchor],
+        [cancelBar.heightAnchor constraintEqualToConstant:kWDGHairlineHeight+kWDGMenuCancelGap+kWDGMenuRowHeight],
+        [cancelLine.leadingAnchor constraintEqualToAnchor:cancelBar.leadingAnchor],
+        [cancelLine.trailingAnchor constraintEqualToAnchor:cancelBar.trailingAnchor],
+        [cancelLine.topAnchor constraintEqualToAnchor:cancelBar.topAnchor],
+        [cancelLine.heightAnchor constraintEqualToConstant:kWDGHairlineHeight],
+        [cancelRow.leadingAnchor constraintEqualToAnchor:cancelBar.leadingAnchor constant:kWDGPadding],
+        [cancelRow.trailingAnchor constraintEqualToAnchor:cancelBar.trailingAnchor constant:-kWDGPadding],
+        [cancelRow.topAnchor constraintEqualToAnchor:cancelLine.bottomAnchor constant:kWDGMenuCancelGap],
+        [cancelRow.bottomAnchor constraintEqualToAnchor:cancelBar.bottomAnchor],
+        fitsContent]];
+    UIStackView *stack=[UIStackView new];stack.axis=UILayoutConstraintAxisVertical;stack.spacing=0;stack.translatesAutoresizingMaskIntoConstraints=NO;[scroll addSubview:stack];
+    [NSLayoutConstraint activateConstraints:@[
+        [stack.leadingAnchor constraintEqualToAnchor:scroll.contentLayoutGuide.leadingAnchor],
+        [stack.trailingAnchor constraintEqualToAnchor:scroll.contentLayoutGuide.trailingAnchor],
+        [stack.topAnchor constraintEqualToAnchor:scroll.contentLayoutGuide.topAnchor],
+        [stack.bottomAnchor constraintEqualToAnchor:scroll.contentLayoutGuide.bottomAnchor],
+        [stack.widthAnchor constraintEqualToAnchor:scroll.frameLayoutGuide.widthAnchor]]];
+    UILabel *titleLabel=[UILabel new];titleLabel.translatesAutoresizingMaskIntoConstraints=NO;titleLabel.font=[UIFont systemFontOfSize:17 weight:UIFontWeightSemibold];titleLabel.textColor=UIColor.labelColor;titleLabel.numberOfLines=0;titleLabel.text=title;
+    [stack addArrangedSubview:titleLabel];[stack setCustomSpacing:subtitle.length?6:14 afterView:titleLabel];
+    if(subtitle.length){
+        UILabel *subtitleLabel=[UILabel new];subtitleLabel.translatesAutoresizingMaskIntoConstraints=NO;subtitleLabel.font=[UIFont systemFontOfSize:12 weight:UIFontWeightRegular];
+        subtitleLabel.textColor=UIColor.secondaryLabelColor;subtitleLabel.numberOfLines=0;subtitleLabel.text=subtitle;
+        [stack addArrangedSubview:subtitleLabel];[stack setCustomSpacing:12 afterView:subtitleLabel];
+    }
+    if(items.count){
+        NSMutableArray<UIView *> *views=[NSMutableArray array];
+        [items enumerateObjectsUsingBlock:^(WDGMenuItem *item,NSUInteger index,__unused BOOL *stop){
+            if(index>0)[views addObject:[self menuHairline]];
+            WDGRowControl *row=[self menuRowWithTitle:item.title color:item.destructive?UIColor.systemRedColor:UIColor.labelColor checked:item.checked tag:(NSInteger)index];
+            row.enabled=item.enabled;if(!item.enabled)row.alpha=0.4;
+            [views addObject:row];
+        }];
+        UIStackView *rows=[[UIStackView alloc] initWithArrangedSubviews:views];rows.axis=UILayoutConstraintAxisVertical;rows.spacing=0;rows.translatesAutoresizingMaskIntoConstraints=NO;
+        [stack addArrangedSubview:rows];
+    }
+}
+- (void)presentMenuWithTitle:(NSString *)title subtitle:(NSString *)subtitle items:(NSArray<WDGMenuItem *> *)items {
+    WDGOverlayView *overlay=[self beginOverlayWithIdentifier:@"WDG.Menu"];
+    if(!overlay)return;
+    self.menuItems=[items copy];
+    [self installMenuTitle:title subtitle:subtitle items:items inCard:overlay.card];
+    [self.window.rootViewController.view layoutIfNeeded];
+    [overlay presentWithCompletion:nil];
+}
+- (void)presentSheet:(WDGSheetController *)sheet {
+    if(!sheet)return;
+    WDGOverlayView *overlay=[self beginOverlayWithIdentifier:@"WDG.Sheet"];
+    if(!overlay)return;
+    self.activeSheet=sheet;
+    __weak WDGPanel *weakSelf=self;
+    sheet.requestClose=^(WDGSheetBlock action){WDGPanel *panel=weakSelf;if(panel)[panel dismissOverlayWithAction:action];};
+    UIView *content=sheet.contentView;[overlay.card addSubview:content];
+    [NSLayoutConstraint activateConstraints:@[
+        [content.leadingAnchor constraintEqualToAnchor:overlay.card.leadingAnchor],
+        [content.trailingAnchor constraintEqualToAnchor:overlay.card.trailingAnchor],
+        [content.topAnchor constraintEqualToAnchor:overlay.card.topAnchor],
+        [content.bottomAnchor constraintEqualToAnchor:overlay.card.bottomAnchor]]];
+    [self.window.rootViewController.view layoutIfNeeded];
+    [overlay presentWithCompletion:nil];
+}
+- (void)dismissOverlayWithAction:(WDGSheetBlock)action {
+    if(!self.overlay||self.overlayBusy)return;
+    WDGOverlayView *overlay=self.overlay;
+    self.overlayBusy=YES;
+    if(self.activeSheet)self.activeSheet.dismissed=YES;
+    [overlay dismissWithCompletion:^{
+        BOOL tornDown=overlay.tornDown;
+        if(self.overlay==overlay)self.overlay=nil;
+        self.overlayBusy=NO;self.activeSheet=nil;self.menuItems=nil;
+        if(!tornDown&&action)action();
+    }];
+}
+- (void)removeOverlayImmediately {
+    WDGOverlayView *overlay=self.overlay;
+    self.overlay=nil;self.overlayBusy=NO;self.activeSheet=nil;self.menuItems=nil;
+    [self.datePicker removeFromSuperview];
+    [overlay removeImmediately];
 }
 - (void)chooseCartTarget {
     NSArray *rows=[[NSArray alloc] initWithArray:WDGCartCandidates() copyItems:YES];
@@ -581,7 +736,7 @@ static const CGFloat kWDGMenuCheckSide=16;
     [items addObject:[WDGMenuItem itemWithTitle:@"跟随购物车勾选项（默认）" checked:!explicit destructive:NO action:^{if(![rows isEqual:WDGCartCandidates()]){[self alert:@"购物车有更新" message:@"请重新选择目标。 "];return;}WDGCartChooseLine(nil);[self refresh];}]];
     for(NSDictionary *row in rows){NSString *key=[row[@"lineKey"] copy];NSDictionary *raw=[WDGCartRawLine(key) copy];NSString *title=[NSString stringWithFormat:@"%@ · %@ × %@",row[@"title"]?:@"商品",row[@"skuTitle"]?:@"未选规格",row[@"quantity"]?:@"?"];[items addObject:[WDGMenuItem itemWithTitle:title checked:NO destructive:NO action:^{if(!raw||![raw isEqual:WDGCartRawLine(key)]||!WDGCartChooseLine(key)){[self alert:@"商品已更新" message:@"请重新核对规格和数量。 "];return;}[self refresh];}]];}
     NSString *subtitle=explicit?@"当前来源：手动指定\n只选择目标，不修改购物车、不下单。":@"当前来源：购物车勾选（默认）\n只选择目标，不修改购物车、不下单。";
-    [self presentMenu:[WDGMenuSheetController menuWithTitle:@"要抢哪件" subtitle:subtitle items:items]];
+    [self presentMenuWithTitle:@"要抢哪件" subtitle:subtitle items:items];
 }
 - (NSDate *)selectedMinute {
     NSCalendar *c=[(self.datePicker.calendar?:NSCalendar.currentCalendar) copy];c.timeZone=self.datePicker.timeZone?:NSTimeZone.localTimeZone;
@@ -655,7 +810,7 @@ static const CGFloat kWDGMenuCheckSide=16;
         NSUInteger lanes=values[index].unsignedIntegerValue;
         [items addObject:[WDGMenuItem itemWithTitle:titles[index] checked:self.concurrentLanes==lanes destructive:NO action:^{self.concurrentLanes=lanes;[self refresh];}]];
     }
-    [self presentMenu:[WDGMenuSheetController menuWithTitle:@"下单并发" subtitle:@"多路会对同一订单目标同时发出多个请求，可能分别成功并重复下单。最终确认会列出最多订单数及总扣款上限。" items:items]];
+    [self presentMenuWithTitle:@"下单并发" subtitle:@"多路会对同一订单目标同时发出多个请求，可能分别成功并重复下单。最终确认会列出最多订单数及总扣款上限。" items:items];
 }
 - (void)showMore {
     [self endEditing];
@@ -666,7 +821,7 @@ static const CGFloat kWDGMenuCheckSide=16;
     [items addObject:[WDGMenuItem itemWithTitle:retryOn?@"循环重发：已开启（最多 3 次）":@"循环重发：已关闭" checked:NO destructive:NO action:^{[WDGCore.shared setRetryEnabled:!retryOn attempts:3];[self refresh];}]];
     BOOL adsOn=[WDGCore.shared.status[@"ads"][@"enabled"] boolValue];
     [items addObject:[WDGMenuItem itemWithTitle:adsOn?@"去广告：已开启（点按关闭）":@"去广告：已关闭（点按开启）" checked:NO destructive:NO action:^{[WDGCore.shared setAdsEnabled:!adsOn];}]];
-    [self presentMenu:[WDGMenuSheetController menuWithTitle:@"更多" subtitle:nil items:items]];
+    [self presentMenuWithTitle:@"更多" subtitle:nil items:items];
 }
 @end
 void WDGShowOverlay(void) {

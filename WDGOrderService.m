@@ -232,6 +232,11 @@ static id WGSCloneConfirmation(id model) {
 @property(nonatomic) BOOL payTypeBound;
 @property(nonatomic) NSUInteger concurrentLanes;
 @property(nonatomic,strong) NSMutableArray<WDGServiceLane *> *lanes;
+@property(nonatomic) BOOL retryEnabled;
+@property(nonatomic) NSUInteger maxAttempts;
+@property(nonatomic) NSUInteger attemptIndex;
+@property(nonatomic) NSTimeInterval retryDelay;
+@property(nonatomic,strong) NSTimer *retryTimer;
 @property(nonatomic) BOOL aggregateTimedOut;
 - (void)beginConfirm;
 - (void)beginCreate;
@@ -243,12 +248,17 @@ static id WGSCloneConfirmation(id model) {
     uint64_t _generation;
 }
 - (instancetype)init {
-    if ((self=[super init])) _concurrentLanes=1;
+    if ((self=[super init])) {_concurrentLanes=1;_maxAttempts=1;_retryDelay=0.35;}
     return self;
+}
+- (BOOL)configureRetryEnabled:(BOOL)enabled attempts:(NSUInteger)attempts error:(NSError **)error {
+    if (self.active || self.finished || self.taskID.length) {if(error)*error=WGSError(17,@"任务已开始，不能再改重发设置");return NO;}
+    if (attempts<1 || attempts>5) {if(error)*error=WGSError(18,@"重发次数只支持 1 至 5 次");return NO;}
+    self.retryEnabled=enabled;self.maxAttempts=enabled?attempts:1;self.attemptIndex=0;return YES;
 }
 - (BOOL)configureConcurrentLanes:(NSUInteger)lanes error:(NSError **)error {
     if (self.active || self.finished || self.taskID.length) {if(error)*error=WGSError(12,@"任务已开始，不能再改并发路数");return NO;}
-    if (lanes!=1 && lanes!=2) {if(error)*error=WGSError(13,@"并发只支持单路或双路竞速");return NO;}
+    if (lanes!=1 && lanes!=2 && lanes!=4) {if(error)*error=WGSError(13,@"并发只支持 1/2/4 路");return NO;}
     self.concurrentLanes=lanes;return YES;
 }
 + (void)setExecutionAllowedCheck:(BOOL (^)(void))check { gExecutionAllowed=[check copy]; }
@@ -472,7 +482,7 @@ static id WGSCloneConfirmation(id model) {
     NSString *validation=[self validateConfirmedModel:self.confirmationModel];
     if (validation) {[self stop:validation state:@"failed"];return;}
     if (!WDGServiceDispatch(&_state,_generation)) {[self stop:@"任务已消费，不重复创建订单" state:@"failed"];return;}
-    NSUInteger laneCount=MIN(MAX(self.concurrentLanes,1),2);
+    NSUInteger laneCount=MIN(MAX(self.concurrentLanes,1),4);
     NSMutableArray *lanes=[NSMutableArray array];
     for (NSUInteger i=0;i<laneCount;++i) {
         // Every lane owns typed copies. The native Service binds payButtonType
@@ -500,11 +510,8 @@ static id WGSCloneConfirmation(id model) {
                 ++gReplies;
                 BOOL pending=NO;
                 for (WDGServiceLane *other in self.lanes) if(!other.settled) pending=YES;
-                [self emitAggregateTerminal:!pending];
-                if (!pending && !self.finished) {
-                    self.finished=YES;self.active=NO;
-                    [self.timeoutTimer invalidate];self.timeoutTimer=nil;[self releaseModels];
-                }
+                if (pending) {[self emitAggregateTerminal:NO];return;}
+                [self settleWave];
             });
         };
         @try {
@@ -514,6 +521,69 @@ static id WGSCloneConfirmation(id model) {
             for (WDGServiceLane *other in self.lanes) other.settled=YES;
             [self emitAggregateTerminal:YES];
             self.finished=YES;self.active=NO;[self releaseModels];return;
+        }
+    }
+}
+- (void)settleWave {
+    if (self.finished) return;
+    BOOL anySuccess=NO,anyUnknown=NO;
+    for (WDGServiceLane *lane in self.lanes) {
+        if (lane.success) anySuccess=YES;
+        else if ([lane.outcome isEqual:@"unknown"]) anyUnknown=YES;
+    }
+    // Only a definite business rejection proves no order exists. A timeout or a
+    // transport error stays unknown and must never trigger another Create.
+    if (!anySuccess && !anyUnknown && self.retryEnabled && self.attemptIndex+1<self.maxAttempts) {
+        self.attemptIndex++;
+        [self.timeoutTimer invalidate];self.timeoutTimer=nil;
+        [self progress:@"sending" message:[NSString stringWithFormat:@"前次明确未创建，%0.0f 毫秒后重发（第 %lu/%lu 次）",self.retryDelay*1000.0,(unsigned long)self.attemptIndex+1,(unsigned long)self.maxAttempts]];
+        self.retryTimer=[NSTimer timerWithTimeInterval:self.retryDelay target:self selector:@selector(retryFire:) userInfo:nil repeats:NO];
+        [NSRunLoop.mainRunLoop addTimer:self.retryTimer forMode:NSRunLoopCommonModes];
+        return;
+    }
+    [self emitAggregateTerminal:YES];
+    self.finished=YES;self.active=NO;
+    [self.timeoutTimer invalidate];self.timeoutTimer=nil;
+    [self.retryTimer invalidate];self.retryTimer=nil;
+    [self releaseModels];
+}
+- (void)retryFire:(NSTimer *)timer {
+    [self.retryTimer invalidate];self.retryTimer=nil;
+    if (!self.active || self.finished) return;
+    NSUInteger laneCount=MIN(MAX(self.concurrentLanes,1),4);
+    NSMutableArray *lanes=[NSMutableArray array];
+    for (NSUInteger i=0;i<laneCount;++i) {
+        id request=WGSCloneRequest(self.requestModel);
+        id confirmation=WGSCloneConfirmation(self.confirmationModel);
+        if (!request || !confirmation || !WGSSetUnsigned(request,@"setPayButtonType:",self.payType.unsignedIntegerValue)) {
+            [self stop:@"重发参数复制失败，未继续创建订单" state:@"failed"];return;
+        }
+        WDGServiceLane *lane=[WDGServiceLane new];lane.request=request;lane.confirmation=confirmation;
+        [lanes addObject:lane];
+    }
+    self.lanes=lanes;self.aggregateTimedOut=NO;gCreateCalls+=lanes.count;
+    [self progress:@"sending" message:[NSString stringWithFormat:@"第 %lu 次重发 · %lu 路",(unsigned long)self.attemptIndex+1,(unsigned long)lanes.count]];
+    self.timeoutTimer=[NSTimer timerWithTimeInterval:30 target:self selector:@selector(createTimedOut:) userInfo:nil repeats:NO];
+    [NSRunLoop.mainRunLoop addTimer:self.timeoutTimer forMode:NSRunLoopCommonModes];
+    for (WDGServiceLane *lane in lanes) {
+        void (^callback)(BOOL,id,id)=^(BOOL success,id response,id nativeError) {
+            dispatch_async(dispatch_get_main_queue(),^{
+                if (lane.settled || self.finished) return;
+                lane.settled=YES;lane.success=success&&!nativeError;
+                lane.outcome=lane.success?@"success":([WGSGet(nativeError,@"originError") isKindOfClass:NSError.class]?@"unknown":@"failed");
+                ++gReplies;
+                BOOL pending=NO;
+                for (WDGServiceLane *other in self.lanes) if(!other.settled) pending=YES;
+                if (pending) {[self emitAggregateTerminal:NO];return;}
+                [self settleWave];
+            });
+        };
+        @try {
+            ((void(*)(id,SEL,id,id,id))objc_msgSend)(NSClassFromString(@"VDTradeConfOrderService"),NSSelectorFromString(gCreateSelector),lane.request,lane.confirmation,[callback copy]);
+        } @catch (__unused NSException *e) {
+            WDGServiceTimeout(&_state,_generation);
+            for (WDGServiceLane *other in self.lanes) {other.settled=YES;other.outcome=@"unknown";}
+            [self settleWave];return;
         }
     }
 }
@@ -527,6 +597,7 @@ static id WGSCloneConfirmation(id model) {
     if(!pending) return;
     self.aggregateTimedOut=YES;WDGServiceTimeout(&_state,_generation);
     [self.timeoutTimer invalidate];self.timeoutTimer=nil;
+    [self.retryTimer invalidate];self.retryTimer=nil;
     [self releaseModels];
     [self emitAggregateTerminal:YES];
     // In-flight native callbacks stay registered; a late real result may update

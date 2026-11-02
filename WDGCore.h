@@ -31,6 +31,9 @@ FOUNDATION_EXPORT NSString * const WDGBuildID;
 // native offset requires a new Review, while displayed local mode stays local.
 - (BOOL)armCartAt:(NSDate *)date maximumTotal:(NSDecimalNumber *)maximumTotal concurrentLanes:(NSUInteger)lanes clockSnapshot:(NSDictionary *)clockSnapshot error:(NSError **)error;
 - (void)cancelTask:(NSString *)reason;
+// Bounded resend: applies to cart tasks only. The service stops on success or
+// on any unknown/timeout result; only definite business rejections resend.
+- (void)setRetryEnabled:(BOOL)enabled attempts:(NSUInteger)attempts;
 - (NSString * _Nullable)exportReport:(NSError **)error;
 @end
 

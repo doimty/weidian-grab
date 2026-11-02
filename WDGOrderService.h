@@ -30,6 +30,9 @@ typedef void (^WDGOrderReply)(NSDictionary *receipt);
 // submission. 2 sends two independent CreateOrder requests for the same cart
 // template; the server may or may not de-duplicate them.
 - (BOOL)configureConcurrentLanes:(NSUInteger)lanes error:(NSError * _Nullable * _Nullable)error;
+// Opt-in bounded resend. Only a definite business rejection (proven no order)
+// triggers the next wave; success or any unknown/timeout result stops it.
+- (BOOL)configureRetryEnabled:(BOOL)enabled attempts:(NSUInteger)attempts error:(NSError * _Nullable * _Nullable)error;
 @property (nonatomic, readonly) NSUInteger concurrentLanes;
 - (BOOL)submitTask:(NSString *)taskID completion:(WDGOrderReply)completion error:(NSError * _Nullable * _Nullable)error;
 - (BOOL)cancelBeforeCreate;

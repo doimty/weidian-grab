@@ -12,7 +12,7 @@
 #import <objc/message.h>
 
 NSString * const WDGStateDidChange = @"WDGStateDidChange";
-NSString * const WDGVersion = @"0.9.6";
+NSString * const WDGVersion = @"0.9.7";
 #ifndef WDG_BUILD_ID
 #define WDG_BUILD_ID "local-unbuilt"
 #endif
@@ -66,6 +66,8 @@ static NSDictionary *WDGCachedClockStatus(NSDictionary *sample) {
 @property (nonatomic,copy) NSDictionary *lastReceipt;
 @property (nonatomic,strong) NSDecimalNumber *cartMaximum;
 @property (nonatomic) NSUInteger cartLanes;
+@property (nonatomic) BOOL cartRetryEnabled;
+@property (nonatomic) NSUInteger cartRetryAttempts;
 @property (nonatomic,copy) NSDictionary *serverClock;
 @property (nonatomic,copy) NSDictionary *cartClockSnapshot;
 @property (nonatomic,strong) NSDate *cartLocalDue;
@@ -126,7 +128,7 @@ static NSDictionary *WDGCachedClockStatus(NSDictionary *sample) {
     }
     return @{@"version":WDGVersion,@"build":WDGBuildID,@"captureEnabled":@(self.captureEnabled),
              @"snapshot":self.snapshot?:@{},@"task":[self.task copy],@"events":[self.recent copy],
-             @"firedCount":@(self.firedCount),@"ioError":self.ioError?:@"",@"storagePath":self.storagePath,@"receipt":self.lastReceipt?:@{},@"transport":[WDGOrderService diagnostics],@"cart":WDGCartDiagnostics(),@"clock":WDGCachedClockStatus(self.serverClock),@"ads":WDGAdsDiagnostics()};
+             @"firedCount":@(self.firedCount),@"ioError":self.ioError?:@"",@"storagePath":self.storagePath,@"receipt":self.lastReceipt?:@{},@"transport":[WDGOrderService diagnostics],@"cart":WDGCartDiagnostics(),@"clock":WDGCachedClockStatus(self.serverClock),@"ads":WDGAdsDiagnostics(),@"retryEnabled":@(self.cartRetryEnabled)};
 }
 - (void)setAdsEnabled:(BOOL)enabled {
     if(![NSThread isMainThread]){dispatch_async(dispatch_get_main_queue(), ^{[self setAdsEnabled:enabled];});return;}
@@ -214,7 +216,7 @@ static NSDictionary *WDGCachedClockStatus(NSDictionary *sample) {
 }
 - (BOOL)armCartAt:(NSDate *)date maximumTotal:(NSDecimalNumber *)maximumTotal concurrentLanes:(NSUInteger)lanes clockSnapshot:(NSDictionary *)clockSnapshot error:(NSError **)error {
     if(!NSThread.isMainThread){if(error)*error=WGDError(1,@"请在主线程设置任务");return NO;}
-    if(lanes!=1&&lanes!=2){if(error)*error=WGDError(30,@"并发只支持单路或双路竞速");return NO;}
+    if(lanes!=1&&lanes!=2&&lanes!=4){if(error)*error=WGDError(30,@"并发只支持 1/2/4 路");return NO;}
     NSDictionary *review=[clockSnapshot copy],*fresh=[WDGReadServerClock() copy];
     self.serverClock=fresh;
     NSDate *localDue=date;NSDictionary *chosen=review;
@@ -237,6 +239,10 @@ static NSDictionary *WDGCachedClockStatus(NSDictionary *sample) {
     self.cartMaximum=maximumTotal;self.cartLanes=lanes;
     BOOL armed=[self armAt:date action:@"preheatOnce" payType:nil error:error];
     self.cartMaximum=nil;self.cartLanes=1;self.cartLocalDue=nil;self.cartClockSnapshot=nil;return armed;
+}
+- (void)setRetryEnabled:(BOOL)enabled attempts:(NSUInteger)attempts {
+    if(![NSThread isMainThread]){dispatch_async(dispatch_get_main_queue(), ^{[self setRetryEnabled:enabled attempts:attempts];});return;}
+    self.cartRetryEnabled=enabled;self.cartRetryAttempts=attempts;
 }
 - (BOOL)armAt:(NSDate *)date action:(NSString *)action payType:(NSNumber *)payType error:(NSError **)error {
     if(!NSThread.isMainThread){if(error)*error=WGDError(1,@"请在主线程设置任务");return NO;}
@@ -282,6 +288,7 @@ static NSDictionary *WDGCachedClockStatus(NSDictionary *sample) {
         prepared=[self preparePreheatWithPayType:nil error:error];
         if(!prepared||![prepared.sampleKey isEqual:sampleKey]||
            ![prepared configureConcurrentLanes:self.cartLanes error:error]||
+           ![prepared configureRetryEnabled:self.cartRetryEnabled attempts:(self.cartRetryAttempts?:1) error:error]||
            ![prepared configureCartDueAt:localDue maximumTotal:maximum error:error]){
             if(prepared&&![prepared.sampleKey isEqual:sampleKey]&&error)*error=WGDError(21,@"准备期间购物车目标已变化，请重新确认");
             return NO;
@@ -302,6 +309,7 @@ static NSDictionary *WDGCachedClockStatus(NSDictionary *sample) {
         NSDictionary *clock=self.cartClockSnapshot?:WDGCachedClockStatus(nil);BOOL native=WDGNativeClockMode(clock);
         self.task[@"warmupAt"]=@(fireAt);
         self.task[@"maximumTotal"]=maximum.stringValue;self.task[@"concurrentLanes"]=@(self.cartLanes);
+        self.task[@"retryEnabled"]=@(self.cartRetryEnabled);self.task[@"retryAttempts"]=@(self.cartRetryAttempts?:1);
         self.task[@"clockMode"]=native?@"native_recent":@"local";
         self.task[@"clockOffsetMs"]=native?clock[@"offsetMs"]:@0;
         self.task[@"clockSource"]=clock[@"source"]?:@"none";

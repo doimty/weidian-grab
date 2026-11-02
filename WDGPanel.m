@@ -512,7 +512,7 @@ static NSDictionary *WDGSheetRow(NSString *label,NSString *value,BOOL mono) {ret
     NSError *error=nil;id request=WDGCartBuildRequest(&error);
     WDGOrderService *s=request?[WDGOrderService preparePreheatRequest:request sampleKey:key payType:nil error:&error]:nil;
     if(![key isEqual:WDGCartSnapshotKey()]){[self alert:@"目标已变化" message:@"请重新选择后校验。 "];return;}
-    if(!s||![s configureConcurrentLanes:self.concurrentLanes==2?2:1 error:&error]||![s configureCartDueAt:localDue maximumTotal:maximum error:&error]){[self alert:@"本地校验未通过" message:error.localizedDescription?:@"请核对商品和规格。 "];return;}
+    if(!s||![s configureConcurrentLanes:self.concurrentLanes error:&error]||![s configureCartDueAt:localDue maximumTotal:maximum error:&error]){[self alert:@"本地校验未通过" message:error.localizedDescription?:@"请核对商品和规格。 "];return;}
     [self endEditing];
     WDGSheetController *sheet=[WDGSheetController sheetWithTitle:@"本地参数校验成功" rows:[self clockReviewRows:clock announced:date localDue:localDue] footnote:@"商品请求、原生服务与金额参数已就绪。未联网，未设置任务，未调用确认或创建订单接口。最终地址、运费及实付仍由服务端确认。只读已有样本，未网络测 RTT；偏差不是精度保证。" warning:NO primaryTitle:@"知道了" primaryAction:nil secondaryTitle:nil];
     [self presentSheet:sheet];
@@ -523,16 +523,18 @@ static NSDictionary *WDGSheetRow(NSString *label,NSString *value,BOOL mono) {ret
     if(!items.count||!key.length){[self alert:@"先选好商品" message:@"刷新购物车或点商品卡选择目标。 "];return;}
     NSDate *date=[self selectedMinute];NSDictionary *clock=nil;
     if(![self localDeadlineForDate:date clockSnapshot:&clock])return;
-    NSUInteger lanes=self.concurrentLanes==2?2:1;
+    NSUInteger lanes=self.concurrentLanes;
     NSDecimalNumber *total=[maximum decimalNumberByMultiplyingBy:[NSDecimalNumber decimalNumberWithMantissa:lanes exponent:0 isNegative:NO]];
     NSDictionary *first=items.firstObject;
     NSMutableDictionary *productRow=[WDGSheetRow(@"商品",[NSString stringWithFormat:@"%@ · %@ × %@%@",first[@"title"]?:@"商品",first[@"skuTitle"]?:@"未选规格",first[@"quantity"]?:@"?",items.count>1?[NSString stringWithFormat:@" · 共 %lu 条",(unsigned long)items.count]:@""],NO) mutableCopy];
     productRow[@"middle"]=@YES;
-    NSString *footnote=lanes==2?[NSString stringWithFormat:@"可能重复下单：同商品最多 2 单，总扣款上限 ¥%@；单笔实付超过最高实付即停止提交。首个成功不会撤销另一已发请求",[self formattedAmount:total]]:@"到点创建 1 次真实订单，实付超过最高实付即停止提交，不打开支付链接";
-    WDGSheetController *sheet=[WDGSheetController sheetWithTitle:lanes==2?@"确认双路竞速任务":@"确认这笔任务"
-        rows:@[productRow,WDGSheetRow(@"开抢",self.timeValue.text?:@"",NO),WDGSheetRow(@"最高实付",[NSString stringWithFormat:@"¥%@",[self formattedAmount:maximum]],YES),WDGSheetRow(@"并发",lanes==2?@"最多 2 单":@"最多 1 单",NO),WDGSheetRow(@"时钟",[self clockSummary:clock],NO)]
-        footnote:footnote warning:lanes==2
-        primaryTitle:lanes==2?@"确认双路 · 接受最多2单":@"确认单路 · 最多1单"
+    NSString *footnote=lanes>1?[NSString stringWithFormat:@"可能重复下单：同商品最多 %lu 单，总扣款上限 ¥%@；单笔实付超过最高实付即停止提交。首个成功不会撤销其余已发请求",(unsigned long)lanes,[self formattedAmount:total]]:@"到点创建 1 次真实订单，实付超过最高实付即停止提交，不打开支付链接";
+    NSString *sheetTitle=lanes>1?[NSString stringWithFormat:@"确认 %lu 路竞速任务",(unsigned long)lanes]:@"确认这笔任务";
+    NSString *primaryTitle=lanes>1?[NSString stringWithFormat:@"确认 %lu 路 · 接受最多%lu单",(unsigned long)lanes,(unsigned long)lanes]:@"确认单路 · 最多1单";
+    WDGSheetController *sheet=[WDGSheetController sheetWithTitle:sheetTitle
+        rows:@[productRow,WDGSheetRow(@"开抢",self.timeValue.text?:@"",NO),WDGSheetRow(@"最高实付",[NSString stringWithFormat:@"¥%@",[self formattedAmount:maximum]],YES),WDGSheetRow(@"并发",[NSString stringWithFormat:@"最多 %lu 单",(unsigned long)lanes],NO),WDGSheetRow(@"时钟",[self clockSummary:clock],NO)]
+        footnote:footnote warning:lanes>1
+        primaryTitle:primaryTitle
         primaryAction:^{NSArray *nowKeys=[[WDGCartSelectedLines() valueForKey:@"lineKey"] sortedArrayUsingSelector:@selector(compare:)];if(![key isEqual:WDGCartSnapshotKey()]||![keys isEqual:nowKeys]){[self alert:@"购物车目标已变化" message:@"请重新核对商品和规格。 "];return;}NSError *error=nil;if(![WDGCore.shared armCartAt:date maximumTotal:maximum concurrentLanes:lanes clockSnapshot:clock error:&error])[self alert:@"任务未设置" message:error.localizedDescription];}
         secondaryTitle:@"再看看"];
     [self presentSheet:sheet];
@@ -544,14 +546,17 @@ static NSDictionary *WDGSheetRow(NSString *label,NSString *value,BOOL mono) {ret
     UIActivityViewController *a=[[UIActivityViewController alloc] initWithActivityItems:@[[NSURL fileURLWithPath:file]] applicationActivities:nil];a.popoverPresentationController.sourceView=self.card;a.popoverPresentationController.sourceRect=self.card.bounds;[self.window.rootViewController presentViewController:a animated:YES completion:nil];
 }
 - (void)chooseConcurrentLanes {
-    UIAlertController *a=[UIAlertController alertControllerWithTitle:@"下单并发" message:@"双路会对同一订单目标发出 2 路请求，可能分别成功并重复下单。最终确认会列出最多订单数及总扣款上限。" preferredStyle:UIAlertControllerStyleActionSheet];
+    UIAlertController *a=[UIAlertController alertControllerWithTitle:@"下单并发" message:@"多路会对同一订单目标同时发出多个请求，可能分别成功并重复下单。最终确认会列出最多订单数及总扣款上限。" preferredStyle:UIAlertControllerStyleActionSheet];
     [a addAction:[UIAlertAction actionWithTitle:self.concurrentLanes==1?@"✓ 单路（默认）":@"单路（默认）" style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *v){self.concurrentLanes=1;[self refresh];}]];
-    [a addAction:[UIAlertAction actionWithTitle:self.concurrentLanes==2?@"✓ 双路竞速 · 可能重复下单":@"双路竞速 · 可能重复下单" style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *v){self.concurrentLanes=2;[self refresh];}]];
+    [a addAction:[UIAlertAction actionWithTitle:self.concurrentLanes==2?@"✓ 双路 · 可能重复下单":@"双路 · 可能重复下单" style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *v){self.concurrentLanes=2;[self refresh];}]];
+    [a addAction:[UIAlertAction actionWithTitle:self.concurrentLanes==4?@"✓ 四路 · 最多 4 单":@"四路 · 最多 4 单" style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *v){self.concurrentLanes=4;[self refresh];}]];
     [a addAction:[UIAlertAction actionWithTitle:@"取消" style:UIAlertActionStyleCancel handler:nil]];a.popoverPresentationController.sourceView=self.card;a.popoverPresentationController.sourceRect=self.card.bounds;[self.window.rootViewController presentViewController:a animated:YES completion:nil];
 }
 - (void)showMore {
     [self endEditing];UIAlertController *a=[UIAlertController alertControllerWithTitle:@"更多" message:nil preferredStyle:UIAlertControllerStyleActionSheet];
-    UIAlertAction *lanes=[UIAlertAction actionWithTitle:self.concurrentLanes==2?@"并发：双路竞速":@"并发：单路" style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *v){[self chooseConcurrentLanes];}];lanes.enabled=self.primaryButton.enabled;[a addAction:lanes];
+    UIAlertAction *lanes=[UIAlertAction actionWithTitle:self.concurrentLanes>1?[NSString stringWithFormat:@"并发：%lu 路",(unsigned long)self.concurrentLanes]:@"并发：单路" style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *v){[self chooseConcurrentLanes];}];lanes.enabled=self.primaryButton.enabled;[a addAction:lanes];
+    BOOL retryOn=[WDGCore.shared.status[@"task"][@"retryEnabled"] boolValue];
+    [a addAction:[UIAlertAction actionWithTitle:retryOn?@"循环重发：已开启（最多 3 次）":@"循环重发：已关闭" style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *v){[WDGCore.shared setRetryEnabled:!retryOn attempts:3];[self refresh];}]];
     BOOL adsOn=[WDGCore.shared.status[@"ads"][@"enabled"] boolValue];
     [a addAction:[UIAlertAction actionWithTitle:adsOn?@"去广告：已开启（点按关闭）":@"去广告：已关闭（点按开启）" style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *v){[WDGCore.shared setAdsEnabled:!adsOn];}]];
     [a addAction:[UIAlertAction actionWithTitle:@"读取微店时钟" style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *v){[self readServerClock];}]];

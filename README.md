@@ -1,4 +1,4 @@
-# WeidianGrab 0.9.18
+# WeidianGrab 0.9.19
 
 微店买家版 7.9.62 / iOS15+ / RootHide。悬浮面板用于选择购物车目标、设定时间和最高实付金额；执行路径直接调用 App 原生网络 Service，不模拟点击，不调用订单页的提交按钮方法。
 
@@ -9,7 +9,7 @@
 3. 核对确认框后才设置任务。右上角“···”收纳本地参数校验、五秒演练、诊断导出，以及“并发：单路/双路竞速”。
 4. 到点前保持微店在前台。悬浮卡可收起，执行不依赖订单确认页。
 
-## 去广告（0.9.18 · 新增）
+## 去广告（0.9.19 · 新增）
 
 默认开启，可在“···”里随时关闭，开关会持久化。
 
@@ -22,7 +22,7 @@
 
 范围限制：WindMill / 穿山甲 / 广点通等 SDK 仍在进程内，本版只挡微店自己的展示与注册入口；IM 会话营销位和服务端运营位内容尚未覆盖。
 
-## 对时（0.9.18）
+## 对时（0.9.19）
 
 这是**读取微店已有的时钟校准缓存**，不是新增联网校时接口、NTP 测量或网络 RTT 补偿。任务卡及“···”中可查看来源与状态。
 
@@ -91,8 +91,8 @@ clang -fobjc-arc -fblocks -Wall -Wextra -Werror -Wno-unused-parameter \
   -o /tmp/cart-preheat-mock
 /tmp/cart-preheat-mock
 make clean && make package THEOS_PACKAGE_SCHEME=roothide FINALPACKAGE=1
-python3 scripts/validate_deb.py packages/com.koudai.weidian.grab_0.9.18_iphoneos-arm64e.deb \
-  --version 0.9.18 --expected-sdk 16.4 --output manifest.json
+python3 scripts/validate_deb.py packages/com.koudai.weidian.grab_0.9.19_iphoneos-arm64e.deb \
+  --version 0.9.19 --expected-sdk 16.4 --output manifest.json
 ```
 
 固定 roothide/theos `88506b2c22e9e07dd4ed055f23c9e398a117a2c7`、arm64+arm64e、最低 iOS15。SDK归档名16.5，元数据实际16.4。CI先执行模拟/门控测试，再出精确包并核验依赖、filter、脚本与哈希；完整日志随产物保存。

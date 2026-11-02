@@ -13,7 +13,7 @@
 #import <string.h>
 
 NSString * const WDGStateDidChange = @"WDGStateDidChange";
-NSString * const WDGVersion = @"0.9.18";
+NSString * const WDGVersion = @"0.9.19";
 #ifndef WDG_BUILD_ID
 #define WDG_BUILD_ID "local-unbuilt"
 #endif
@@ -110,6 +110,10 @@ static const NSTimeInterval WDGDetailPollInterval=0.05;
 static const NSUInteger WDGDetailPollTicks=120;     // 120 x 0.05s = 6.0s
 static const NSUInteger WDGDetailPollSeconds=6;
 static const NSUInteger WDGDetailPollEventEvery=10; // one detail_poll per 10 ticks
+// A spec sheet means the user is choosing a spec, and every choice is a server
+// round trip, so the confirmation window extends to 25 s measured from the
+// original trigger. firedAt is never reset: this is one absolute deadline.
+static const NSTimeInterval WDGDetailSkuWaitSeconds=25;
 // The panel lives in its own pass-through window (WDGPassWindow at
 // UIWindowLevelAlert+2, declared in WDGPanel.m). Anything at or above
 // UIWindowLevelAlert is an overlay and never part of the app's own window set.
@@ -154,6 +158,50 @@ static UIAlertController *WDGDetailVisibleAlert(void) {
     for(UIWindow *window in WDGDetailAppWindows()){
         if(!window.rootViewController)continue;
         UIAlertController *found=WDGDetailFindAlert(window.rootViewController,0);
+        if(found)return found;
+    }
+    return nil;
+}
+// SKU/quantity sheet. The page's 立即购买 opens VDTradeSkuPickerView (or the
+// quick-order VDQuickOrderSkuView) instead of a confirmation page, and a virtual
+// product has no pre-selected spec: the user must choose one in the sheet, and
+// every choice is a server round trip. The task therefore never touches the
+// sheet (no option, no button): it only detects the sheet, reports the wait and
+// keeps the confirmation window open until the user's choice lands.
+static const NSUInteger WDGDetailSkuDepth=8;
+static BOOL WDGDetailSkuLayerClass(id view) {
+    static Class pickerClass,quickClass;
+    static dispatch_once_t once;
+    dispatch_once(&once,^{
+        pickerClass=NSClassFromString(@"VDTradeSkuPickerView");
+        quickClass=NSClassFromString(@"VDQuickOrderSkuView");
+    });
+    if(!view||object_isClass(view))return NO;
+    @try{
+        return (pickerClass&&[view isKindOfClass:pickerClass])||(quickClass&&[view isKindOfClass:quickClass]);
+    }
+    @catch(__unused NSException *exception){return NO;}
+}
+// A view counts only when it and every ancestor up to its window is visible: a
+// pre-built sheet parked in the hierarchy with hidden=YES is not on screen.
+static BOOL WDGDetailOnScreen(UIView *view) {
+    UIWindow *window=view.window;
+    if(!window)return NO;
+    for(UIView *current=view;current;current=current.superview){
+        if(current==window)return YES;
+        if(current.hidden||current.alpha<=0.01)return NO;
+    }
+    return NO;
+}
+static UIView *WDGDetailFindSkuLayer(UIView *view,NSUInteger depth) {
+    if(!view||depth>WDGDetailSkuDepth)return nil;
+    if(WDGDetailSkuLayerClass(view)&&WDGDetailOnScreen(view))return view;
+    for(UIView *child in view.subviews){UIView *found=WDGDetailFindSkuLayer(child,depth+1);if(found)return found;}
+    return nil;
+}
+static UIView *WDGDetailVisibleSkuLayer(void) {
+    for(UIWindow *window in WDGDetailAppWindows()){
+        UIView *found=WDGDetailFindSkuLayer(window,0);
         if(found)return found;
     }
     return nil;
@@ -324,6 +372,11 @@ id WDGVisibleDetailController(NSString **reason) {
 // never did.
 @property (nonatomic) BOOL detailSawSample;
 @property (nonatomic) BOOL detailOnlyQuickRequest;
+// Spec/quantity sheet. The task never touches it: detailSkuSeen latches on the
+// first visible sheet, which extends the wait window to 25 s, explains the wait
+// in task.reason (the panel's statusDetail) and names the sheet timeout.
+@property (nonatomic) BOOL detailSkuSeen;
+- (void)observeDetailSkuLayer;
 - (void)finishDetailWithResult:(NSString *)result reason:(NSString *)reason;
 - (void)failDetailTask:(NSString *)reason result:(NSString *)result;
 - (void)failDetailOnAlert:(UIAlertController *)alert;
@@ -584,6 +637,7 @@ id WDGVisibleDetailController(NSString **reason) {
     self.detailPollAttempts=0;self.detailFiredAt=0;
     self.detailFinished=NO;self.detailSawNewSample=NO;self.detailLastStage=nil;
     self.detailSawSample=NO;self.detailOnlyQuickRequest=YES;
+    self.detailSkuSeen=NO;
     if(detailTask)self.task[@"detailItemId"]=detailItemID?:@"";    if(cartTask){
         NSDictionary *clock=self.cartClockSnapshot?:WDGCachedClockStatus(nil);BOOL native=WDGNativeClockMode(clock);
         self.task[@"warmupAt"]=@(fireAt);
@@ -688,6 +742,7 @@ id WDGVisibleDetailController(NSString **reason) {
     id controller=self.detailController;
     self.detailFinished=NO;self.detailSawNewSample=NO;self.detailLastStage=nil;
     self.detailSawSample=NO;self.detailOnlyQuickRequest=YES;
+    self.detailSkuSeen=NO;
     // Unconditional attempt marker: a field log without this row means the fire
     // callback itself never reached the detail path.
     [self recordEvent:@"detail_fire" details:@{@"taskId":taskID?:@"",@"action":@"detailOnce",@"state":self.task[@"state"]?:@"",@"result":@"attempt"}];
@@ -740,11 +795,27 @@ id WDGVisibleDetailController(NSString **reason) {
     self.detailPoll=[NSTimer timerWithTimeInterval:WDGDetailPollInterval target:self selector:@selector(detailPollTick:) userInfo:taskID repeats:YES];
     [NSRunLoop.mainRunLoop addTimer:self.detailPoll forMode:NSRunLoopCommonModes];
 }
-// 120 probes at 0.05s (six seconds). Every probe looks for an app alert first
-// and ends the task the moment one appears. A sample is usable only when it
-// reports stage=confirmed, was published after the purchase trigger and carries
-// exactly one payment option. A request-stage sample is never submitted: it is
-// missing the server-side amount confirmation.
+// The sheet is observed, never operated: no spec option and no sheet button is
+// ever touched, because the user has to choose the spec themselves (the page
+// pre-selects nothing and every choice costs a server round trip). The first
+// sight of a visible sheet latches the 25 s window and rewrites the running
+// reason, which is what the panel shows while the task waits.
+- (void)observeDetailSkuLayer {
+    // Once latched, the extended window and the waiting copy are already in
+    // force; there is nothing left to detect, so the per-probe tree walk stops.
+    if(self.detailSkuSeen)return;
+    UIView *layer=WDGDetailVisibleSkuLayer();
+    if(!layer)return;
+    self.detailSkuSeen=YES;
+    self.task[@"reason"]=@"请选择规格，选完自动提交";
+    [self recordEvent:@"detail_sku" details:@{@"result":@"waiting",@"class":NSStringFromClass(layer.class)?:@""}];
+}
+// 120 probes at 0.05s (six seconds), extended to 25 s from the same trigger as
+// soon as a spec sheet is observed. Every probe looks for an app alert first and
+// ends the task the moment one appears. A sample is usable only when it reports
+// stage=confirmed, was published after the purchase trigger and carries exactly
+// one payment option. A request-stage sample is never submitted: it is missing
+// the server-side amount confirmation.
 - (void)detailPollTick:(NSTimer *)timer {
     if(timer!=self.detailPoll){[timer invalidate];return;}
     NSString *taskID=[timer.userInfo isKindOfClass:NSString.class]?(NSString *)timer.userInfo:nil;
@@ -753,6 +824,11 @@ id WDGVisibleDetailController(NSString **reason) {
     if(UIApplication.sharedApplication.applicationState!=UIApplicationStateActive){[timer invalidate];self.detailPoll=nil;[self cancelTask:@"微店离开前台，任务已取消"];return;}
     UIAlertController *alert=WDGDetailVisibleAlert();
     if(alert){[self failDetailOnAlert:alert];return;}
+    // Detect the spec sheet before the snapshot is read. Nothing in the sheet is
+    // ever touched: the user picks the spec, and the task only waits for the
+    // confirmation page that follows. A visible sheet extends the window.
+    [self observeDetailSkuLayer];
+    if(![self.task[@"id"] isEqual:taskID]||![self.task[@"state"] isEqual:@"preheating"])return;
     NSDictionary *snapshot=self.snapshot?:@{};
     NSString *sampleKey=[snapshot[@"sampleKey"] isKindOfClass:NSString.class]?snapshot[@"sampleKey"]:nil;
     NSString *baseline=[self.task[@"sampleKey"] isKindOfClass:NSString.class]?self.task[@"sampleKey"]:@"";
@@ -779,21 +855,32 @@ id WDGVisibleDetailController(NSString **reason) {
         [self submitDetailSample:sampleKey payType:payType];
         return;
     }
-    if(++self.detailPollAttempts>=WDGDetailPollTicks){
+    // Six seconds from the trigger while the page goes straight to a
+    // confirmation page; twenty-five seconds once a spec sheet was seen, because
+    // choosing a spec is interactive and server-backed. The deadline is derived
+    // from the original firedAt and is never restarted.
+    self.detailPollAttempts++;
+    NSTimeInterval elapsed=NSDate.date.timeIntervalSince1970-self.detailFiredAt;
+    BOOL expired=self.detailSkuSeen?elapsed>=WDGDetailSkuWaitSeconds:self.detailPollAttempts>=WDGDetailPollTicks;
+    if(expired){
         [timer invalidate];self.detailPoll=nil;
+        if(self.detailSkuSeen)[self recordEvent:@"detail_sku" details:@{@"result":@"timeout"}];
         [self failDetailTask:[self detailTimeoutReason] result:@"timeout"];
         return;
     }
-    // One sample per ten ticks keeps the event log readable: 11 rows for six
-    // seconds. request-stage samples are reported, never submitted.
+    // One sample per ten ticks keeps the event log readable: at most 11 rows for
+    // the six-second window, 50 while a spec sheet holds the 25-second window.
+    // request-stage samples are reported, never submitted.
     if(self.detailPollAttempts%WDGDetailPollEventEvery==0)
         [self recordEvent:@"detail_poll" details:@{@"taskId":taskID,@"result":WDGDetailPollStatusFor(sampleKey,pageKind,stage,capturedAt,self.detailFiredAt),@"stage":stage.length?stage:@"none",@"pageKind":pageKind,@"class":WDGDetailFrontClassName()}];
 }
-// Timeout copy names what was actually observed: an app alert is handled before
-// it gets here, a quick page without confirmOrderDO says so explicitly, a
-// changed page reports its real stage, and only a page that never moved reports
-// the plain "no confirmation page" case.
+// Timeout copy names what was actually observed: a spec sheet turns the wait
+// into a 25-second choice window, an app alert is handled before it gets here, a
+// quick page without confirmOrderDO says so explicitly, a changed page reports
+// its real stage, and only a page that never moved reports the six-second case.
 - (NSString *)detailTimeoutReason {
+    if(self.detailSkuSeen)
+        return @"未提交：等待规格选择超时（25 秒）";
     NSString *stage=self.detailLastStage.length?self.detailLastStage:@"none";
     if(self.detailSawNewSample&&[stage isEqual:@"confirmed"])
         return @"未提交：确认页已出现，但样本时间早于触发时刻，未提交";

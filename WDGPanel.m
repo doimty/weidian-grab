@@ -15,6 +15,7 @@ static const CGFloat kWDGButtonHeight=46;
 static const CGFloat kWDGButtonRadius=14;
 static const CGFloat kWDGCardMaxHeightRatio=0.72;
 static const CGFloat kWDGFooterHitHeight=44;
+static const CGFloat kWDGScrollFooterGap=12;
 static const CGFloat kWDGCardMaxWidth=376;
 static const CGFloat kWDGCardScreenMargin=32;
 static const CGFloat kWDGOverlayScrimAlpha=0.45;
@@ -457,7 +458,19 @@ static const CGFloat kWDGMenuCancelGap=8;
     CGFloat width=MIN(kWDGCardMaxWidth,self.window.bounds.size.width-kWDGCardScreenMargin);
     [NSLayoutConstraint activateConstraints:@[[self.card.centerXAnchor constraintEqualToAnchor:root.centerXAnchor],[self.card.centerYAnchor constraintEqualToAnchor:root.centerYAnchor],[self.card.widthAnchor constraintEqualToConstant:width],[self.card.topAnchor constraintGreaterThanOrEqualToAnchor:root.topAnchor constant:16],[self.card.bottomAnchor constraintLessThanOrEqualToAnchor:root.bottomAnchor constant:-16]]];
     UIScrollView *scroll=[UIScrollView new];scroll.translatesAutoresizingMaskIntoConstraints=NO;scroll.showsVerticalScrollIndicator=NO;scroll.alwaysBounceVertical=NO;scroll.keyboardDismissMode=UIScrollViewKeyboardDismissModeInteractive;scroll.contentInsetAdjustmentBehavior=UIScrollViewContentInsetAdjustmentNever;[self.card addSubview:scroll];
-    [NSLayoutConstraint activateConstraints:@[[scroll.leadingAnchor constraintEqualToAnchor:self.card.leadingAnchor constant:kWDGPadding],[scroll.trailingAnchor constraintEqualToAnchor:self.card.trailingAnchor constant:-kWDGPadding],[scroll.topAnchor constraintEqualToAnchor:self.card.topAnchor constant:kWDGPadding],[scroll.bottomAnchor constraintEqualToAnchor:self.card.bottomAnchor constant:-kWDGPadding]]];
+    // 固定底区（状态行 + 可选 statusDetail + 红色主按钮 + 取消 + 版本/诊断行）整块在 scroll 之外：
+    // 高度由内容决定、竖直不可压缩，卡片触到 0.72 屏高上限时只压 scroll，底区永远完整可见。
+    UIStackView *footer=[UIStackView new];footer.axis=UILayoutConstraintAxisVertical;footer.spacing=kWDGSectionGap;footer.translatesAutoresizingMaskIntoConstraints=NO;
+    [footer setContentCompressionResistancePriority:UILayoutPriorityRequired forAxis:UILayoutConstraintAxisVertical];
+    [self.card addSubview:footer];
+    [NSLayoutConstraint activateConstraints:@[
+        [scroll.leadingAnchor constraintEqualToAnchor:self.card.leadingAnchor constant:kWDGPadding],
+        [scroll.trailingAnchor constraintEqualToAnchor:self.card.trailingAnchor constant:-kWDGPadding],
+        [scroll.topAnchor constraintEqualToAnchor:self.card.topAnchor constant:kWDGPadding],
+        [scroll.bottomAnchor constraintEqualToAnchor:footer.topAnchor constant:-kWDGScrollFooterGap],
+        [footer.leadingAnchor constraintEqualToAnchor:self.card.leadingAnchor constant:kWDGPadding],
+        [footer.trailingAnchor constraintEqualToAnchor:self.card.trailingAnchor constant:-kWDGPadding],
+        [footer.bottomAnchor constraintEqualToAnchor:self.card.bottomAnchor constant:-kWDGPadding]]];
     NSLayoutConstraint *fitsContent=[scroll.heightAnchor constraintEqualToAnchor:scroll.contentLayoutGuide.heightAnchor];fitsContent.priority=UILayoutPriorityDefaultHigh;
     NSLayoutConstraint *softCap=[self.card.heightAnchor constraintLessThanOrEqualToAnchor:root.heightAnchor multiplier:kWDGCardMaxHeightRatio];
     [NSLayoutConstraint activateConstraints:@[fitsContent,softCap]];
@@ -495,19 +508,21 @@ static const CGFloat kWDGMenuCancelGap=8;
     [self.statusDot.widthAnchor constraintEqualToConstant:6].active=YES;[self.statusDot.heightAnchor constraintEqualToConstant:6].active=YES;
     self.statusLabel=[self label:12 weight:UIFontWeightMedium];self.statusLabel.font=[UIFont monospacedDigitSystemFontOfSize:12 weight:UIFontWeightMedium];self.statusLabel.textColor=UIColor.secondaryLabelColor;self.statusLabel.numberOfLines=0;self.statusLabel.lineBreakMode=NSLineBreakByWordWrapping;self.statusLabel.accessibilityIdentifier=@"WDG.Countdown";
     [self.statusLabel setContentCompressionResistancePriority:UILayoutPriorityRequired forAxis:UILayoutConstraintAxisVertical];[self.statusLabel setContentCompressionResistancePriority:UILayoutPriorityDefaultLow forAxis:UILayoutConstraintAxisHorizontal];
-    UIStackView *statusRow=[[UIStackView alloc] initWithArrangedSubviews:@[self.statusDot,self.statusLabel]];statusRow.axis=UILayoutConstraintAxisHorizontal;statusRow.alignment=UIStackViewAlignmentCenter;statusRow.spacing=6;[stack addArrangedSubview:statusRow];
+    UIStackView *statusRow=[[UIStackView alloc] initWithArrangedSubviews:@[self.statusDot,self.statusLabel]];statusRow.axis=UILayoutConstraintAxisHorizontal;statusRow.alignment=UIStackViewAlignmentCenter;statusRow.spacing=6;
+    [statusRow setContentCompressionResistancePriority:UILayoutPriorityRequired forAxis:UILayoutConstraintAxisVertical];[footer addArrangedSubview:statusRow];
     self.statusDetail=[self label:12 weight:UIFontWeightRegular];self.statusDetail.textColor=UIColor.secondaryLabelColor;self.statusDetail.numberOfLines=0;self.statusDetail.lineBreakMode=NSLineBreakByWordWrapping;self.statusDetail.hidden=YES;
     [self.statusDetail setContentCompressionResistancePriority:UILayoutPriorityRequired forAxis:UILayoutConstraintAxisVertical];[self.statusDetail setContentCompressionResistancePriority:UILayoutPriorityDefaultLow forAxis:UILayoutConstraintAxisHorizontal];
-    [stack addArrangedSubview:self.statusDetail];
-    self.primaryButton=[UIButton buttonWithType:UIButtonTypeSystem];self.primaryButton.backgroundColor=[self accent];self.primaryButton.layer.cornerRadius=kWDGButtonRadius;self.primaryButton.layer.cornerCurve=kCACornerCurveContinuous;[self.primaryButton setTitleColor:UIColor.whiteColor forState:UIControlStateNormal];self.primaryButton.titleLabel.font=[UIFont systemFontOfSize:16 weight:UIFontWeightSemibold];[self.primaryButton setTitle:@"准备抢购" forState:UIControlStateNormal];self.primaryButton.accessibilityIdentifier=@"WDG.ArmTask";[self.primaryButton.heightAnchor constraintEqualToConstant:kWDGButtonHeight].active=YES;[self.primaryButton addTarget:self action:@selector(schedule) forControlEvents:UIControlEventTouchUpInside];[stack addArrangedSubview:self.primaryButton];
-    self.cancelButton=[UIButton buttonWithType:UIButtonTypeSystem];self.cancelButton.tintColor=UIColor.secondaryLabelColor;self.cancelButton.titleLabel.font=[UIFont systemFontOfSize:13 weight:UIFontWeightMedium];[self.cancelButton setTitle:@"取消任务" forState:UIControlStateNormal];[self.cancelButton addTarget:self action:@selector(cancel) forControlEvents:UIControlEventTouchUpInside];self.cancelButton.accessibilityIdentifier=@"WDG.CancelTask";self.cancelButton.hidden=YES;[stack addArrangedSubview:self.cancelButton];
+    [footer addArrangedSubview:self.statusDetail];
+    self.primaryButton=[UIButton buttonWithType:UIButtonTypeSystem];self.primaryButton.backgroundColor=[self accent];self.primaryButton.layer.cornerRadius=kWDGButtonRadius;self.primaryButton.layer.cornerCurve=kCACornerCurveContinuous;[self.primaryButton setTitleColor:UIColor.whiteColor forState:UIControlStateNormal];self.primaryButton.titleLabel.font=[UIFont systemFontOfSize:16 weight:UIFontWeightSemibold];[self.primaryButton setTitle:@"准备抢购" forState:UIControlStateNormal];self.primaryButton.accessibilityIdentifier=@"WDG.ArmTask";[self.primaryButton.heightAnchor constraintEqualToConstant:kWDGButtonHeight].active=YES;[self.primaryButton addTarget:self action:@selector(schedule) forControlEvents:UIControlEventTouchUpInside];[footer addArrangedSubview:self.primaryButton];
+    self.cancelButton=[UIButton buttonWithType:UIButtonTypeSystem];self.cancelButton.tintColor=UIColor.secondaryLabelColor;self.cancelButton.titleLabel.font=[UIFont systemFontOfSize:13 weight:UIFontWeightMedium];[self.cancelButton setTitle:@"取消任务" forState:UIControlStateNormal];[self.cancelButton addTarget:self action:@selector(cancel) forControlEvents:UIControlEventTouchUpInside];self.cancelButton.accessibilityIdentifier=@"WDG.CancelTask";self.cancelButton.hidden=YES;[footer addArrangedSubview:self.cancelButton];
     self.versionLabel=[self label:10 weight:UIFontWeightRegular];self.versionLabel.textColor=UIColor.tertiaryLabelColor;self.versionLabel.textAlignment=NSTextAlignmentRight;self.versionLabel.numberOfLines=1;self.versionLabel.userInteractionEnabled=NO;
     self.exportLink=[self textLink:@"导出诊断" action:@selector(export)];self.exportLink.accessibilityIdentifier=@"WDG.ExportDiagnostics";
     UIView *footerLeft=[UIView new],*footerRight=[UIView new];
-    UIStackView *footer=[[UIStackView alloc] initWithArrangedSubviews:@[footerLeft,self.versionLabel,self.exportLink,footerRight]];
-    footer.axis=UILayoutConstraintAxisHorizontal;footer.alignment=UIStackViewAlignmentCenter;footer.spacing=8;
+    UIStackView *footerRow=[[UIStackView alloc] initWithArrangedSubviews:@[footerLeft,self.versionLabel,self.exportLink,footerRight]];
+    footerRow.axis=UILayoutConstraintAxisHorizontal;footerRow.alignment=UIStackViewAlignmentCenter;footerRow.spacing=8;
     [footerLeft.widthAnchor constraintEqualToAnchor:footerRight.widthAnchor].active=YES;
-    [footer.heightAnchor constraintEqualToConstant:kWDGFooterHitHeight].active=YES;[stack addArrangedSubview:footer];
+    [footerRow.heightAnchor constraintEqualToConstant:kWDGFooterHitHeight].active=YES;[footerRow setContentCompressionResistancePriority:UILayoutPriorityRequired forAxis:UILayoutConstraintAxisVertical];
+    [footer addArrangedSubview:footerRow];
     [self updateTimeDisplay];
 }
 - (void)focusAmount {if(self.maximumAmount.enabled)[self.maximumAmount becomeFirstResponder];}

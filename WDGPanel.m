@@ -233,19 +233,33 @@ static const CGFloat kWDGMenuRowHeight=52;
 static const CGFloat kWDGMenuCheckSide=16;
 static const CGFloat kWDGMenuCancelGap=8;
 
+@interface WDGSwitch : UISwitch
+@property(nonatomic,copy) void (^onToggle)(BOOL on);
+@end
+@implementation WDGSwitch
+- (void)fireToggle { if(self.onToggle) self.onToggle(self.isOn); }
+@end
+
 @interface WDGMenuItem : NSObject
 @property(nonatomic,copy) NSString *title;
 @property(nonatomic,assign) BOOL checked;
 @property(nonatomic,assign) BOOL destructive;
 @property(nonatomic,assign) BOOL enabled;
+@property(nonatomic,assign) BOOL isSwitch;
+@property(nonatomic,assign) BOOL switchOn;
 @property(nonatomic,copy) WDGSheetBlock action;
+@property(nonatomic,copy) void (^switchHandler)(BOOL on);
 + (instancetype)itemWithTitle:(NSString *)title checked:(BOOL)checked destructive:(BOOL)destructive action:(WDGSheetBlock)action;
++ (instancetype)switchItemWithTitle:(NSString *)title on:(BOOL)on handler:(void (^)(BOOL on))handler;
 @end
 
 @implementation WDGMenuItem
 - (instancetype)init {if((self=[super init]))_enabled=YES;return self;}
 + (instancetype)itemWithTitle:(NSString *)title checked:(BOOL)checked destructive:(BOOL)destructive action:(WDGSheetBlock)action {
     WDGMenuItem *item=[self new];item.title=title?:@"";item.checked=checked;item.destructive=destructive;item.action=action;return item;
+}
++ (instancetype)switchItemWithTitle:(NSString *)title on:(BOOL)on handler:(void (^)(BOOL))handler {
+    WDGMenuItem *item=[self new];item.title=title?:@"";item.isSwitch=YES;item.switchOn=on;item.switchHandler=handler;return item;
 }
 @end
 
@@ -590,6 +604,30 @@ static const CGFloat kWDGMenuCancelGap=8;
     [root layoutIfNeeded];
     return overlay;
 }
+- (UIView *)switchRowWithTitle:(NSString *)title on:(BOOL)on handler:(void (^)(BOOL on))handler {
+    WDGRowControl *row=[WDGRowControl new];row.translatesAutoresizingMaskIntoConstraints=NO;
+    row.accessibilityLabel=title;
+    UILabel *label=[UILabel new];label.translatesAutoresizingMaskIntoConstraints=NO;label.userInteractionEnabled=NO;
+    label.font=[UIFont systemFontOfSize:15 weight:UIFontWeightRegular];label.textColor=UIColor.labelColor;label.text=title;label.numberOfLines=1;
+    WDGSwitch *toggle=[WDGSwitch new];toggle.translatesAutoresizingMaskIntoConstraints=NO;toggle.onTintColor=WDGSheetAccent();toggle.on=on;
+    toggle.accessibilityLabel=title;
+    __weak WDGSwitch *weakToggle=toggle;
+    toggle.onToggle=^(BOOL value){if(handler)handler(value);if(weakToggle)[weakToggle setOn:value animated:YES];};
+    [toggle addTarget:toggle action:@selector(fireToggle) forControlEvents:UIControlEventValueChanged];
+    [row addSubview:label];[row addSubview:toggle];
+    [NSLayoutConstraint activateConstraints:@[
+        [label.leadingAnchor constraintEqualToAnchor:row.leadingAnchor],
+        [label.centerYAnchor constraintEqualToAnchor:row.centerYAnchor],
+        [label.trailingAnchor constraintLessThanOrEqualToAnchor:toggle.leadingAnchor constant:-10],
+        [toggle.trailingAnchor constraintEqualToAnchor:row.trailingAnchor],
+        [toggle.centerYAnchor constraintEqualToAnchor:row.centerYAnchor],
+        [row.heightAnchor constraintGreaterThanOrEqualToConstant:kWDGMenuRowHeight]]];
+    [row addTarget:self action:@selector(tapSwitchRow:) forControlEvents:UIControlEventTouchUpInside];
+    return row;
+}
+- (void)tapSwitchRow:(WDGRowControl *)sender {
+    for(UIView *view in sender.subviews) if([view isKindOfClass:WDGSwitch.class]){WDGSwitch *toggle=(WDGSwitch *)view;[toggle setOn:!toggle.isOn animated:YES];[toggle fireToggle];return;}
+}
 - (UIView *)menuHairline {
     UIView *line=[UIView new];line.translatesAutoresizingMaskIntoConstraints=NO;line.userInteractionEnabled=NO;
     line.backgroundColor=[UIColor.separatorColor colorWithAlphaComponent:0.5];
@@ -640,7 +678,9 @@ static const CGFloat kWDGMenuCancelGap=8;
     UIView *cancelBar=[UIView new];cancelBar.translatesAutoresizingMaskIntoConstraints=NO;[card addSubview:cancelBar];
     UIView *cancelLine=[UIView new];cancelLine.translatesAutoresizingMaskIntoConstraints=NO;cancelLine.userInteractionEnabled=NO;
     cancelLine.backgroundColor=[UIColor.separatorColor colorWithAlphaComponent:0.5];[cancelBar addSubview:cancelLine];
-    WDGRowControl *cancelRow=[self menuRowWithTitle:@"取消" color:UIColor.secondaryLabelColor checked:NO tag:-1];[cancelBar addSubview:cancelRow];
+    WDGRowControl *cancelRow=[self menuRowWithTitle:@"取消" color:UIColor.secondaryLabelColor checked:NO tag:-1];
+    for(UIView *view in cancelRow.subviews) if([view isKindOfClass:UILabel.class]){UILabel *label=(UILabel *)view;label.textAlignment=NSTextAlignmentCenter;[label.trailingAnchor constraintEqualToAnchor:cancelRow.trailingAnchor].active=YES;break;}
+    [cancelBar addSubview:cancelRow];
     NSLayoutConstraint *fitsContent=[scroll.heightAnchor constraintEqualToAnchor:scroll.contentLayoutGuide.heightAnchor];fitsContent.priority=UILayoutPriorityDefaultHigh;
     [NSLayoutConstraint activateConstraints:@[
         [scroll.leadingAnchor constraintEqualToAnchor:card.leadingAnchor constant:kWDGPadding],
@@ -667,7 +707,7 @@ static const CGFloat kWDGMenuCancelGap=8;
         [stack.topAnchor constraintEqualToAnchor:scroll.contentLayoutGuide.topAnchor],
         [stack.bottomAnchor constraintEqualToAnchor:scroll.contentLayoutGuide.bottomAnchor],
         [stack.widthAnchor constraintEqualToAnchor:scroll.frameLayoutGuide.widthAnchor]]];
-    UILabel *titleLabel=[UILabel new];titleLabel.translatesAutoresizingMaskIntoConstraints=NO;titleLabel.font=[UIFont systemFontOfSize:17 weight:UIFontWeightSemibold];titleLabel.textColor=UIColor.labelColor;titleLabel.numberOfLines=0;titleLabel.text=title;
+    UILabel *titleLabel=[UILabel new];titleLabel.translatesAutoresizingMaskIntoConstraints=NO;titleLabel.font=[UIFont systemFontOfSize:17 weight:UIFontWeightSemibold];titleLabel.textColor=UIColor.labelColor;titleLabel.numberOfLines=0;titleLabel.text=title;titleLabel.textAlignment=NSTextAlignmentCenter;
     [stack addArrangedSubview:titleLabel];[stack setCustomSpacing:subtitle.length?6:14 afterView:titleLabel];
     if(subtitle.length){
         UILabel *subtitleLabel=[UILabel new];subtitleLabel.translatesAutoresizingMaskIntoConstraints=NO;subtitleLabel.font=[UIFont systemFontOfSize:12 weight:UIFontWeightRegular];
@@ -678,6 +718,7 @@ static const CGFloat kWDGMenuCancelGap=8;
         NSMutableArray<UIView *> *views=[NSMutableArray array];
         [items enumerateObjectsUsingBlock:^(WDGMenuItem *item,NSUInteger index,__unused BOOL *stop){
             if(index>0)[views addObject:[self menuHairline]];
+            if(item.isSwitch){[views addObject:[self switchRowWithTitle:item.title on:item.switchOn handler:item.switchHandler]];return;}
             WDGRowControl *row=[self menuRowWithTitle:item.title color:item.destructive?UIColor.systemRedColor:UIColor.labelColor checked:item.checked tag:(NSInteger)index];
             row.enabled=item.enabled;if(!item.enabled)row.alpha=0.4;
             [views addObject:row];
@@ -815,12 +856,13 @@ static const CGFloat kWDGMenuCancelGap=8;
 - (void)showMore {
     [self endEditing];
     NSMutableArray<WDGMenuItem *> *items=[NSMutableArray array];
-    WDGMenuItem *lanes=[WDGMenuItem itemWithTitle:self.concurrentLanes>1?[NSString stringWithFormat:@"并发：%lu 路",(unsigned long)self.concurrentLanes]:@"并发：单路" checked:NO destructive:NO action:^{[self chooseConcurrentLanes];}];
+    NSString *lanesValue=self.concurrentLanes>1?[NSString stringWithFormat:@"%lu 路",(unsigned long)self.concurrentLanes]:@"单路";
+    WDGMenuItem *lanes=[WDGMenuItem itemWithTitle:[NSString stringWithFormat:@"并发 · %@",lanesValue] checked:NO destructive:NO action:^{[self chooseConcurrentLanes];}];
     lanes.enabled=self.primaryButton.enabled;[items addObject:lanes];
     BOOL retryOn=[WDGCore.shared.status[@"retryEnabled"] boolValue];
-    [items addObject:[WDGMenuItem itemWithTitle:retryOn?@"循环重发：已开启（最多 3 次）":@"循环重发：已关闭" checked:NO destructive:NO action:^{[WDGCore.shared setRetryEnabled:!retryOn attempts:3];[self refresh];}]];
+    [items addObject:[WDGMenuItem switchItemWithTitle:@"循环重发（最多 3 次）" on:retryOn handler:^(BOOL on){[WDGCore.shared setRetryEnabled:on attempts:3];[self refresh];}]];
     BOOL adsOn=[WDGCore.shared.status[@"ads"][@"enabled"] boolValue];
-    [items addObject:[WDGMenuItem itemWithTitle:adsOn?@"去广告：已开启（点按关闭）":@"去广告：已关闭（点按开启）" checked:NO destructive:NO action:^{[WDGCore.shared setAdsEnabled:!adsOn];}]];
+    [items addObject:[WDGMenuItem switchItemWithTitle:@"去广告" on:adsOn handler:^(BOOL on){[WDGCore.shared setAdsEnabled:on];}]];
     [self presentMenuWithTitle:@"更多" subtitle:nil items:items];
 }
 @end

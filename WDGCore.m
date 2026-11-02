@@ -13,7 +13,7 @@
 #import <string.h>
 
 NSString * const WDGStateDidChange = @"WDGStateDidChange";
-NSString * const WDGVersion = @"0.9.17";
+NSString * const WDGVersion = @"0.9.18";
 #ifndef WDG_BUILD_ID
 #define WDG_BUILD_ID "local-unbuilt"
 #endif
@@ -103,6 +103,119 @@ static NSArray<UIWindow *> *WDGDetailWindows(void) {
             if(window&&![windows containsObject:window])[windows addObject:window];
     }
     return windows;
+}
+// detailOnce diagnostics: the wait window, its sampling cadence and the
+// user-visible second count live in exactly one place.
+static const NSTimeInterval WDGDetailPollInterval=0.05;
+static const NSUInteger WDGDetailPollTicks=120;     // 120 x 0.05s = 6.0s
+static const NSUInteger WDGDetailPollSeconds=6;
+static const NSUInteger WDGDetailPollEventEvery=10; // one detail_poll per 10 ticks
+// The panel lives in its own pass-through window (WDGPassWindow at
+// UIWindowLevelAlert+2, declared in WDGPanel.m). Anything at or above
+// UIWindowLevelAlert is an overlay and never part of the app's own window set.
+static BOOL WDGDetailPluginWindow(UIWindow *window) {
+    if(!window)return YES;
+    Class pass=NSClassFromString(@"WDGPassWindow");
+    if(pass&&[window isKindOfClass:pass])return YES;
+    return window.windowLevel>=UIWindowLevelAlert;
+}
+static BOOL WDGDetailAppWindow(UIWindow *window) {
+    if(!window||WDGDetailPluginWindow(window)||window.hidden||window.alpha<=0.01)return NO;
+    if(window.windowScene&&window.windowScene.activationState!=UISceneActivationStateForegroundActive)return NO;
+    return YES;
+}
+static NSArray<UIWindow *> *WDGDetailAppWindows(void) {
+    NSMutableArray<UIWindow *> *app=[NSMutableArray array];
+    for(UIWindow *window in WDGDetailWindows())if(WDGDetailAppWindow(window))[app addObject:window];
+    return app;
+}
+static UIWindow *WDGDetailLowestAppWindow(NSArray<UIWindow *> *windows) {
+    UIWindow *lowest=nil;
+    for(UIWindow *window in windows)if(!lowest||window.windowLevel<lowest.windowLevel)lowest=window;
+    return lowest;
+}
+// Bounded walk of the app's own controller tree: a sold-out or not-on-sale
+// answer arrives as a UIAlertController presented by the page (or by anything
+// above it), so both the presented chain and child controllers are searched.
+static UIAlertController *WDGDetailFindAlert(UIViewController *controller,NSUInteger depth) {
+    if(!controller||depth>8)return nil;
+    if([controller isKindOfClass:UIAlertController.class]){
+        if(controller.isBeingDismissed)return nil;
+        UIView *view=controller.viewIfLoaded;
+        if(!view||!view.window)return nil;
+        return (UIAlertController *)controller;
+    }
+    UIViewController *presented=controller.presentedViewController;
+    if(presented&&!presented.isBeingDismissed){UIAlertController *found=WDGDetailFindAlert(presented,depth+1);if(found)return found;}
+    for(UIViewController *child in controller.childViewControllers){UIAlertController *found=WDGDetailFindAlert(child,depth+1);if(found)return found;}
+    return nil;
+}
+static UIAlertController *WDGDetailVisibleAlert(void) {
+    for(UIWindow *window in WDGDetailAppWindows()){
+        if(!window.rootViewController)continue;
+        UIAlertController *found=WDGDetailFindAlert(window.rootViewController,0);
+        if(found)return found;
+    }
+    return nil;
+}
+// Alert text is app-owned copy shown to the user; flatten it to one line and
+// clamp it so a long legal paragraph cannot bloat task.reason or the log.
+static NSString *WDGDetailTrimmedText(NSString *value) {
+    if(![value isKindOfClass:NSString.class])return @"";
+    NSString *text=[value stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
+    NSMutableString *flat=[NSMutableString stringWithCapacity:MIN(text.length,(NSUInteger)120)];
+    for(NSUInteger index=0;index<text.length&&flat.length<120;++index){
+        unichar character=[text characterAtIndex:index];
+        [flat appendFormat:@"%C",(unichar)((character=='\n'||character=='\r'||character=='\t')?' ':character)];
+    }
+    if(text.length>flat.length)[flat appendString:@"…"];
+    return [flat copy];
+}
+static NSString *WDGDetailAlertReason(UIAlertController *alert) {
+    NSString *title=WDGDetailTrimmedText(alert.title),*message=WDGDetailTrimmedText(alert.message);
+    NSString *text=(title.length&&message.length&&![title isEqualToString:message])?
+        [NSString stringWithFormat:@"%@：%@",title,message]:(title.length?title:message);
+    return text.length?[NSString stringWithFormat:@"未提交：微店提示「%@」",text]:@"未提交：微店弹出了提示框，未收到确认页";
+}
+// The controller the app is actually showing (presented > navigation top >
+// tab selection). Reported next to every poll sample so a fired purchase that
+// navigated into a confirmation page without a publishable snapshot is
+// distinguishable from one whose button did nothing at all.
+static NSString *WDGDetailFrontClassName(void) {
+    NSArray<UIWindow *> *windows=WDGDetailAppWindows();
+    UIWindow *window=nil;
+    for(UIWindow *candidate in windows)if(candidate.isKeyWindow){window=candidate;break;}
+    if(!window)window=WDGDetailLowestAppWindow(windows);
+    UIViewController *controller=window.rootViewController;
+    for(NSUInteger depth=0;controller&&depth<8;++depth){
+        UIViewController *next=nil;
+        if([controller isKindOfClass:UINavigationController.class])next=((UINavigationController *)controller).topViewController;
+        else if([controller isKindOfClass:UITabBarController.class])next=((UITabBarController *)controller).selectedViewController;
+        if(controller.presentedViewController&&!controller.presentedViewController.isBeingDismissed)next=controller.presentedViewController;
+        if(!next||next==controller)break;
+        controller=next;
+    }
+    return controller?NSStringFromClass(controller.class):@"";
+}
+// A confirmation sample is accepted by stage and publish time only. pageKind is
+// deliberately not consulted: a quick order page (pageKind=quick) that reaches
+// stage=confirmed is submitted exactly like the regular confirmation page, and
+// a request-stage sample (requestDO only) is never submitted at all.
+static BOOL WDGDetailSampleSubmittable(NSString *stage,NSNumber *capturedAt,NSTimeInterval firedAt) {
+    if(![stage isEqual:@"confirmed"])return NO;
+    return capturedAt&&[capturedAt doubleValue]>=firedAt;
+}
+// One compact status string per sample: noSnapshot, or pageKind/stage (the two
+// facts the observer publishes, e.g. quick/request or confirmed/confirmed).
+// A confirmation sample whose publish stamp precedes the trigger is marked
+// stale, because it can never be submitted.
+static NSString *WDGDetailPollStatusFor(NSString *sampleKey,NSString *pageKind,NSString *stage,NSNumber *capturedAt,NSTimeInterval firedAt) {
+    if(!sampleKey.length)return @"noSnapshot";
+    NSString *kind=pageKind.length?pageKind:@"none";
+    NSString *observed=stage.length?stage:@"none";
+    if([observed isEqual:@"confirmed"]&&(!capturedAt||[capturedAt doubleValue]<firedAt))
+        return [NSString stringWithFormat:@"%@/%@/stale",kind,observed];
+    return [NSString stringWithFormat:@"%@/%@",kind,observed];
 }
 static BOOL WDGDetailPageVisible(id page) {
     if(!WDGDetailIsPage(page))return NO;
@@ -201,6 +314,21 @@ id WDGVisibleDetailController(NSString **reason) {
 @property (nonatomic,strong) NSTimer *detailPoll;
 @property (nonatomic) NSUInteger detailPollAttempts;
 @property (nonatomic) NSTimeInterval detailFiredAt;
+// Diagnostics only: the terminal detail_finish event is emitted exactly once,
+// and the last observed sample stage is kept so the timeout reason can name it.
+@property (nonatomic) BOOL detailFinished;
+@property (nonatomic) BOOL detailSawNewSample;
+@property (nonatomic,copy) NSString *detailLastStage;
+// Timeout diagnosis: every sample observed so far was the quick order page
+// (pageKind=quick, stage=request), i.e. requestDO arrived but confirmOrderDO
+// never did.
+@property (nonatomic) BOOL detailSawSample;
+@property (nonatomic) BOOL detailOnlyQuickRequest;
+- (void)finishDetailWithResult:(NSString *)result reason:(NSString *)reason;
+- (void)failDetailTask:(NSString *)reason result:(NSString *)result;
+- (void)failDetailOnAlert:(UIAlertController *)alert;
+- (UIWindow *)handBackKeyWindowForDetailFire;
+- (NSString *)detailTimeoutReason;
 @end
 
 @implementation WDGCore {
@@ -454,8 +582,9 @@ id WDGVisibleDetailController(NSString **reason) {
     // detail-page fact written to task metadata.
     self.detailController=detailTask?detailTarget:nil;
     self.detailPollAttempts=0;self.detailFiredAt=0;
-    if(detailTask)self.task[@"detailItemId"]=detailItemID?:@"";
-    if(cartTask){
+    self.detailFinished=NO;self.detailSawNewSample=NO;self.detailLastStage=nil;
+    self.detailSawSample=NO;self.detailOnlyQuickRequest=YES;
+    if(detailTask)self.task[@"detailItemId"]=detailItemID?:@"";    if(cartTask){
         NSDictionary *clock=self.cartClockSnapshot?:WDGCachedClockStatus(nil);BOOL native=WDGNativeClockMode(clock);
         self.task[@"warmupAt"]=@(fireAt);
         self.task[@"maximumTotal"]=maximum.stringValue;self.task[@"concurrentLanes"]=@(self.cartLanes);
@@ -557,78 +686,165 @@ id WDGVisibleDetailController(NSString **reason) {
     NSString *taskID=[self.task[@"id"] copy];
     NSString *expected=[self.task[@"detailItemId"] isKindOfClass:NSString.class]?self.task[@"detailItemId"]:@"";
     id controller=self.detailController;
-    NSString *reason=nil;
-    if(!controller)reason=@"详情页实例已释放，未提交";
-    else if(!WDGDetailIsPage(controller))reason=@"详情页对象已失效，未提交";
+    self.detailFinished=NO;self.detailSawNewSample=NO;self.detailLastStage=nil;
+    self.detailSawSample=NO;self.detailOnlyQuickRequest=YES;
+    // Unconditional attempt marker: a field log without this row means the fire
+    // callback itself never reached the detail path.
+    [self recordEvent:@"detail_fire" details:@{@"taskId":taskID?:@"",@"action":@"detailOnce",@"state":self.task[@"state"]?:@"",@"result":@"attempt"}];
+    NSString *reason=nil;NSNumber *errorCode=nil;
+    if(!controller){reason=@"详情页实例已释放，未提交";errorCode=@40;}
+    else if(!WDGDetailIsPage(controller)){reason=@"详情页对象已失效，未提交";errorCode=@41;}
     else {
         SEL selector=NSSelectorFromString(@"itemId");
         Method method=WDGDetailInstanceMethod(controller,selector,2);
-        if(!method||!WDGDetailMethodReturns(method,'@')||!WDGDetailMethodArgument(method,1,':'))reason=@"详情页 itemId 读取 ABI 不匹配，未提交";
+        if(!method||!WDGDetailMethodReturns(method,'@')||!WDGDetailMethodArgument(method,1,':')){reason=@"详情页 itemId 读取 ABI 不匹配，未提交";errorCode=@42;}
         else {
             id value=nil;
             @try{value=((id(*)(id,SEL))objc_msgSend)(controller,selector);}
-            @catch(__unused NSException *exception){reason=@"详情页 itemId 读取异常，未提交";}
+            @catch(__unused NSException *exception){reason=@"详情页 itemId 读取异常，未提交";errorCode=@43;}
             if(!reason){
-                if(![value isKindOfClass:NSString.class]||![(NSString *)value length])reason=@"详情页 itemId 为空，未提交";
-                else if(expected.length&&![(NSString *)value isEqualToString:expected])reason=@"详情页商品已变化，未提交";
+                if(![value isKindOfClass:NSString.class]||![(NSString *)value length]){reason=@"详情页 itemId 为空，未提交";errorCode=@44;}
+                else if(expected.length&&![(NSString *)value isEqualToString:expected]){reason=@"详情页商品已变化，未提交";errorCode=@45;}
             }
         }
     }
-    if(!reason&&!WDGDetailPurchaseReady(controller))reason=@"立即购买方法 ABI 不是 void(id,SEL)，未提交";
+    if(!reason&&!WDGDetailPurchaseReady(controller)){reason=@"立即购买方法 ABI 不是 void(id,SEL)，未提交";errorCode=@46;}
     if(reason){
         self.task[@"state"]=@"failed";
         self.task[@"reason"]=reason;
         self.preparedService=nil;self.detailController=nil;
+        [self recordEvent:@"detail_fire" details:@{@"taskId":taskID?:@"",@"action":@"detailOnce",@"state":@"rejected",@"result":@"rejected",@"reason":reason,@"errorCode":errorCode?:@0}];
         [self recordEvent:@"detail_not_fired" details:@{@"taskId":taskID?:@"",@"reason":reason}];
+        [self finishDetailWithResult:@"failed" reason:reason];
         return;
     }
     self.task[@"state"]=@"preheating";
     self.task[@"reason"]=@"已触发立即购买，等待确认订单数据";
     self.detailPollAttempts=0;self.detailFiredAt=NSDate.date.timeIntervalSince1970;
-    [self recordEvent:@"detail_purchase" details:@{@"taskId":taskID?:@""}];
+    // Hand the key back to the app before the click so any sheet or push the
+    // app presents lands in its own window hierarchy instead of over the panel.
+    UIWindow *appWindow=[self handBackKeyWindowForDetailFire];
+    [self recordEvent:@"detail_purchase" details:@{@"taskId":taskID?:@"",@"state":self.task[@"state"]?:@"",@"class":appWindow?NSStringFromClass(appWindow.class):@""}];
     @try{((void(*)(id,SEL))objc_msgSend)(controller,NSSelectorFromString(@"handlePurchaseOperation"));}
     @catch(__unused NSException *exception){
         self.task[@"state"]=@"failed";
         self.task[@"reason"]=@"立即购买调用异常，未提交";
         [self recordEvent:@"detail_not_fired" details:@{@"taskId":taskID?:@"",@"reason":self.task[@"reason"]}];
+        [self finishDetailWithResult:@"failed" reason:self.task[@"reason"]];
         return;
     }
     if(![self.task[@"id"] isEqual:taskID]||![self.task[@"state"] isEqual:@"preheating"])return;
-    self.detailPoll=[NSTimer timerWithTimeInterval:0.05 target:self selector:@selector(detailPollTick:) userInfo:taskID repeats:YES];
+    // A synchronous alert (未开售/已售罄) must fail here, not after three seconds.
+    UIAlertController *alert=WDGDetailVisibleAlert();
+    if(alert){[self failDetailOnAlert:alert];return;}
+    self.detailPoll=[NSTimer timerWithTimeInterval:WDGDetailPollInterval target:self selector:@selector(detailPollTick:) userInfo:taskID repeats:YES];
     [NSRunLoop.mainRunLoop addTimer:self.detailPoll forMode:NSRunLoopCommonModes];
 }
-// 40 probes at 0.05s (about two seconds). A sample is usable only when it is a
-// new confirmation page published after the purchase trigger and carries
-// exactly one payment option; anything else ends the task without submitting.
+// 120 probes at 0.05s (six seconds). Every probe looks for an app alert first
+// and ends the task the moment one appears. A sample is usable only when it
+// reports stage=confirmed, was published after the purchase trigger and carries
+// exactly one payment option. A request-stage sample is never submitted: it is
+// missing the server-side amount confirmation.
 - (void)detailPollTick:(NSTimer *)timer {
     if(timer!=self.detailPoll){[timer invalidate];return;}
-    if(![self.task[@"action"] isEqual:@"detailOnce"]||![self.task[@"state"] isEqual:@"preheating"]){[timer invalidate];self.detailPoll=nil;return;}
+    NSString *taskID=[timer.userInfo isKindOfClass:NSString.class]?(NSString *)timer.userInfo:nil;
+    if(!taskID||![self.task[@"id"] isEqual:taskID]){[timer invalidate];self.detailPoll=nil;return;}
+    if(![self.task[@"action"] isEqual:@"detailOnce"]||![self.task[@"state"] isEqual:@"preheating"]){[timer invalidate];self.detailPoll=nil;[self finishDetailWithResult:@"failed" reason:@"任务状态已变化，停止等待确认页"];return;}
     if(UIApplication.sharedApplication.applicationState!=UIApplicationStateActive){[timer invalidate];self.detailPoll=nil;[self cancelTask:@"微店离开前台，任务已取消"];return;}
+    UIAlertController *alert=WDGDetailVisibleAlert();
+    if(alert){[self failDetailOnAlert:alert];return;}
     NSDictionary *snapshot=self.snapshot?:@{};
     NSString *sampleKey=[snapshot[@"sampleKey"] isKindOfClass:NSString.class]?snapshot[@"sampleKey"]:nil;
     NSString *baseline=[self.task[@"sampleKey"] isKindOfClass:NSString.class]?self.task[@"sampleKey"]:@"";
     NSNumber *capturedAt=[snapshot[@"capturedAt"] isKindOfClass:NSNumber.class]?snapshot[@"capturedAt"]:nil;
-    // No publish timestamp means the sample cannot be proven newer than the
-    // purchase trigger, so it is never submitted.
-    BOOL fresh=capturedAt&&[capturedAt doubleValue]>=self.detailFiredAt;
-    if(sampleKey.length&&![sampleKey isEqualToString:baseline]&&[snapshot[@"stage"] isEqual:@"confirmed"]&&fresh){
-        NSArray *options=[snapshot[@"payOptions"] isKindOfClass:NSArray.class]?snapshot[@"payOptions"]:@[];
+    NSString *stage=[snapshot[@"stage"] isKindOfClass:NSString.class]?snapshot[@"stage"]:@"";
+    NSString *pageKind=[snapshot[@"pageKind"] isKindOfClass:NSString.class]?snapshot[@"pageKind"]:@"";
+    // pageKind is not a gate: the quick order page (pageKind=quick) and the
+    // regular confirmation page publish the same stage and are accepted by the
+    // same criteria. Only stage, publish stamp and payment options decide.
+    BOOL submittable=WDGDetailSampleSubmittable(stage,capturedAt,self.detailFiredAt);
+    BOOL newSample=sampleKey.length>0&&(baseline.length==0||![sampleKey isEqualToString:baseline]);
+    if(sampleKey.length){
+        self.detailSawSample=YES;
+        if(!([pageKind isEqual:@"quick"]&&[stage isEqual:@"request"]))self.detailOnlyQuickRequest=NO;
+    }
+    if(newSample){self.detailSawNewSample=YES;self.detailLastStage=stage.length?stage:@"none";}
+    NSArray *options=[snapshot[@"payOptions"] isKindOfClass:NSArray.class]?snapshot[@"payOptions"]:@[];
+    if(newSample&&submittable){
         NSNumber *payType=options.count==1&&[options.firstObject isKindOfClass:NSDictionary.class]?((NSDictionary *)options.firstObject)[@"type"]:nil;
         [timer invalidate];self.detailPoll=nil;
-        if(options.count>1){[self failDetailTask:[NSString stringWithFormat:@"未拿到确认页数据，未提交：确认页有 %lu 个可用支付按钮，无法唯一确定",(unsigned long)options.count]];return;}
-        if(![payType isKindOfClass:NSNumber.class]){[self failDetailTask:@"未拿到确认页数据，未提交：确认页未给出唯一支付参数"];return;}
+        [self recordEvent:@"detail_poll" details:@{@"taskId":taskID,@"result":[NSString stringWithFormat:@"%@/%@/payOptions:%lu",pageKind.length?pageKind:@"none",stage,(unsigned long)options.count],@"stage":stage,@"pageKind":pageKind,@"class":WDGDetailFrontClassName()}];
+        if(options.count>1){[self failDetailTask:[NSString stringWithFormat:@"未拿到确认页数据，未提交：确认页有 %lu 个可用支付按钮，无法唯一确定",(unsigned long)options.count] result:@"failed"];return;}
+        if(![payType isKindOfClass:NSNumber.class]){[self failDetailTask:@"未拿到确认页数据，未提交：确认页未给出唯一支付参数" result:@"failed"];return;}
         [self submitDetailSample:sampleKey payType:payType];
         return;
     }
-    if(++self.detailPollAttempts>=40){[timer invalidate];self.detailPoll=nil;[self failDetailTask:@"未拿到确认页数据，未提交"];}
+    if(++self.detailPollAttempts>=WDGDetailPollTicks){
+        [timer invalidate];self.detailPoll=nil;
+        [self failDetailTask:[self detailTimeoutReason] result:@"timeout"];
+        return;
+    }
+    // One sample per ten ticks keeps the event log readable: 11 rows for six
+    // seconds. request-stage samples are reported, never submitted.
+    if(self.detailPollAttempts%WDGDetailPollEventEvery==0)
+        [self recordEvent:@"detail_poll" details:@{@"taskId":taskID,@"result":WDGDetailPollStatusFor(sampleKey,pageKind,stage,capturedAt,self.detailFiredAt),@"stage":stage.length?stage:@"none",@"pageKind":pageKind,@"class":WDGDetailFrontClassName()}];
+}
+// Timeout copy names what was actually observed: an app alert is handled before
+// it gets here, a quick page without confirmOrderDO says so explicitly, a
+// changed page reports its real stage, and only a page that never moved reports
+// the plain "no confirmation page" case.
+- (NSString *)detailTimeoutReason {
+    NSString *stage=self.detailLastStage.length?self.detailLastStage:@"none";
+    if(self.detailSawNewSample&&[stage isEqual:@"confirmed"])
+        return @"未提交：确认页已出现，但样本时间早于触发时刻，未提交";
+    if(self.detailSawSample&&self.detailOnlyQuickRequest)
+        return @"未提交：快速下单页已出现但确认数据未回（stage=request）";
+    if(self.detailSawNewSample)
+        return [NSString stringWithFormat:@"未提交：页面已变化但阶段为 %@，未提交",stage];
+    return [NSString stringWithFormat:@"未提交：点了立即购买但 %lu 秒内没有出现确认页",(unsigned long)WDGDetailPollSeconds];
+}
+// The app answered with its own alert (未开售/已售罄/限购). An alert is never a
+// confirmation page: report its text and stop immediately.
+- (void)failDetailOnAlert:(UIAlertController *)alert {
+    [self.detailPoll invalidate];self.detailPoll=nil;
+    NSString *reason=WDGDetailAlertReason(alert);
+    [self recordEvent:@"detail_poll" details:@{@"taskId":self.task[@"id"]?:@"",@"result":@"appAlert",@"class":NSStringFromClass(alert.class)?:@"",@"reason":reason}];
+    [self failDetailTask:reason result:@"appAlert"];
+}
+// Exactly one terminal row per detailOnce task, whichever path ends it first.
+- (void)finishDetailWithResult:(NSString *)result reason:(NSString *)reason {
+    if(self.detailFinished)return;
+    self.detailFinished=YES;
+    [self recordEvent:@"detail_finish" details:@{@"taskId":self.task[@"id"]?:@"",@"action":@"detailOnce",@"state":self.task[@"state"]?:@"",@"result":result?:@"failed",@"reason":reason?:@""}];
+}
+// The panel keeps its own pass-through window key while it is on screen. Give
+// the key back to the app before the page's 立即购买. Failures are ignored: the
+// purchase must never depend on this.
+- (UIWindow *)handBackKeyWindowForDetailFire {
+    @try {
+        NSArray<UIWindow *> *all=WDGDetailWindows();
+        for(UIWindow *window in all)
+            if(window.isKeyWindow&&WDGDetailPluginWindow(window))[window resignKeyWindow];
+        NSMutableArray<UIWindow *> *app=[NSMutableArray array];
+        for(UIWindow *window in all)if(WDGDetailAppWindow(window))[app addObject:window];
+        NSMutableArray<UIWindow *> *preferred=[NSMutableArray array];
+        for(UIWindow *window in app)if(window.rootViewController)[preferred addObject:window];
+        UIWindow *target=WDGDetailLowestAppWindow(preferred.count?preferred:app);
+        if(target&&!target.isKeyWindow)[target makeKeyWindow];
+        return target;
+    } @catch(__unused NSException *exception) { return nil; }
 }
 - (void)failDetailTask:(NSString *)reason {
+    [self failDetailTask:reason result:@"failed"];
+}
+- (void)failDetailTask:(NSString *)reason result:(NSString *)result {
     if(![self.task[@"action"] isEqual:@"detailOnce"])return;
     if(![@[@"firing",@"preheating"] containsObject:self.task[@"state"]])return;
     self.task[@"state"]=@"failed";
     self.task[@"reason"]=reason?:@"未拿到确认页数据，未提交";
     self.preparedService=nil;self.detailController=nil;
     [self recordEvent:@"detail_failed" details:@{@"taskId":[self.task[@"id"] copy],@"reason":self.task[@"reason"]}];
+    [self finishDetailWithResult:result?:@"failed" reason:self.task[@"reason"]];
 }
 // The fresh sample is bound exactly like serviceOnce: prepare observed
 // interface, then submitTask. A rejected arm or a rejected submit ends the task.
@@ -654,6 +870,9 @@ id WDGVisibleDetailController(NSString **reason) {
         self.replyTimeout=[NSTimer timerWithTimeInterval:35 target:self selector:@selector(replyTimedOut:) userInfo:taskID repeats:NO];
         [NSRunLoop.mainRunLoop addTimer:self.replyTimeout forMode:NSRunLoopCommonModes];
     }
+    // ok means "the one allowed submit was handed to the service"; the final
+    // order result still arrives through interface_result.
+    [self finishDetailWithResult:[@[@"failed",@"cancelled"] containsObject:self.task[@"state"]?:@""]?@"failed":@"ok" reason:self.task[@"reason"]];
 }
 - (void)cancelTask:(NSString *)reason {
     if(!NSThread.isMainThread){dispatch_async(dispatch_get_main_queue(), ^{[self cancelTask:reason];});return;}
@@ -678,6 +897,7 @@ id WDGVisibleDetailController(NSString **reason) {
     if([self.task[@"id"] isEqual:taskID]&&[@[@"armed",@"firing",@"preheating",@"waitingSale"] containsObject:self.task[@"state"]]){
         self.task[@"state"]=@"cancelled";self.task[@"reason"]=reason?:@"用户取消";
         [self recordEvent:@"task_cancelled" details:@{@"reason":self.task[@"reason"],@"taskId":taskID?:@""}];
+        if([self.task[@"action"] isEqual:@"detailOnce"])[self finishDetailWithResult:@"cancelled" reason:self.task[@"reason"]];
     }
     self.cancellingTask=NO;
 }

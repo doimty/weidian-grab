@@ -4,11 +4,30 @@
 #import "WDGClock.h"
 #import <math.h>
 
+static const CGFloat kWDGCardRadius=22;
+static const CGFloat kWDGPadding=18;
+static const CGFloat kWDGSectionGap=10;
+static const CGFloat kWDGRowPadding=11;
+static const CGFloat kWDGRowMinHeight=48;
+static const CGFloat kWDGIconSide=20;
+static const CGFloat kWDGHairlineHeight=0.5;
+static const CGFloat kWDGButtonHeight=46;
+static const CGFloat kWDGButtonRadius=14;
+static const CGFloat kWDGCardMaxHeight=480;
+
 @interface WDGPassWindow : UIWindow @end
 @implementation WDGPassWindow
 - (UIView *)hitTest:(CGPoint)point withEvent:(UIEvent *)event {
     UIView *hit=[super hitTest:point withEvent:event];
     return hit==self || hit==self.rootViewController.view ? nil : hit;
+}
+@end
+
+@interface WDGRowControl : UIControl @end
+@implementation WDGRowControl
+- (void)setHighlighted:(BOOL)highlighted {
+    [super setHighlighted:highlighted];
+    self.backgroundColor=highlighted?[UIColor.labelColor colorWithAlphaComponent:0.06]:UIColor.clearColor;
 }
 @end
 
@@ -23,11 +42,11 @@
 @property(nonatomic,strong) UILabel *statusLabel;
 @property(nonatomic,strong) UILabel *statusDetail;
 @property(nonatomic,strong) UILabel *versionLabel;
-@property(nonatomic,strong) UIView *statusPill;
 @property(nonatomic,strong) UIView *statusDot;
 @property(nonatomic,strong) UILabel *lanesBadge;
+@property(nonatomic,strong) UILabel *clockDetail;
 @property(nonatomic,strong) UIDatePicker *datePicker;
-@property(nonatomic,strong) UIButton *timeButton;
+@property(nonatomic,strong) UIControl *timeButton;
 @property(nonatomic,strong) UILabel *timeValue;
 @property(nonatomic,strong) NSDate *dateBeforeEditing;
 @property(nonatomic,strong) UIViewController *timeSheet;
@@ -51,24 +70,66 @@
     return self;
 }
 - (UIColor *)accent {return [UIColor colorWithRed:0.90 green:0.14 blue:0.30 alpha:1];}
-- (UIColor *)softBackground {return UIColor.secondarySystemBackgroundColor;}
 - (UILabel *)label:(CGFloat)size weight:(UIFontWeight)weight {
-    UILabel *l=[UILabel new];l.font=[UIFont systemFontOfSize:size weight:weight];l.textColor=UIColor.labelColor;l.numberOfLines=0;return l;
+    UILabel *l=[UILabel new];l.font=[UIFont systemFontOfSize:size weight:weight];l.textColor=UIColor.labelColor;l.numberOfLines=0;l.translatesAutoresizingMaskIntoConstraints=NO;return l;
 }
 - (UIButton *)iconButton:(NSString *)symbol action:(SEL)selector label:(NSString *)label {
     UIButton *b=[UIButton buttonWithType:UIButtonTypeSystem];
-    [b setImage:[UIImage systemImageNamed:symbol] forState:UIControlStateNormal];b.tintColor=UIColor.secondaryLabelColor;
+    UIImageSymbolConfiguration *config=[UIImageSymbolConfiguration configurationWithPointSize:15 weight:UIImageSymbolWeightSemibold];
+    [b setImage:[UIImage systemImageNamed:symbol withConfiguration:config] forState:UIControlStateNormal];b.tintColor=UIColor.secondaryLabelColor;
     b.accessibilityLabel=label;[b addTarget:self action:selector forControlEvents:UIControlEventTouchUpInside];
-    [b.widthAnchor constraintEqualToConstant:36].active=YES;[b.heightAnchor constraintEqualToConstant:36].active=YES;return b;
+    [b.widthAnchor constraintEqualToConstant:32].active=YES;[b.heightAnchor constraintEqualToConstant:32].active=YES;return b;
 }
-- (UIImageView *)rowIcon:(NSString *)symbol inView:(UIView *)row {
+- (UIView *)hairline {
+    UIView *line=[UIView new];line.translatesAutoresizingMaskIntoConstraints=NO;line.userInteractionEnabled=NO;
+    line.backgroundColor=[UIColor.separatorColor colorWithAlphaComponent:0.5];
+    [line.heightAnchor constraintEqualToConstant:kWDGHairlineHeight].active=YES;return line;
+}
+- (UILabel *)rowTitle:(NSString *)text {
+    UILabel *l=[self label:15 weight:UIFontWeightMedium];l.text=text;l.numberOfLines=1;l.userInteractionEnabled=NO;return l;
+}
+- (UILabel *)rowDetail:(NSString *)text {
+    UILabel *l=[self label:12 weight:UIFontWeightRegular];l.text=text;l.numberOfLines=1;l.textColor=UIColor.secondaryLabelColor;
+    l.adjustsFontSizeToFitWidth=YES;l.minimumScaleFactor=0.8;l.userInteractionEnabled=NO;return l;
+}
+- (UILabel *)rowValue:(NSString *)text mono:(BOOL)mono {
+    UILabel *l=[UILabel new];l.font=mono?[UIFont monospacedDigitSystemFontOfSize:15 weight:UIFontWeightSemibold]:[UIFont systemFontOfSize:15 weight:UIFontWeightSemibold];
+    l.text=text;l.textColor=UIColor.labelColor;l.numberOfLines=1;l.textAlignment=NSTextAlignmentRight;
+    l.adjustsFontSizeToFitWidth=YES;l.minimumScaleFactor=0.8;l.translatesAutoresizingMaskIntoConstraints=NO;l.userInteractionEnabled=NO;return l;
+}
+- (UIControl *)rowWithSymbol:(NSString *)symbol title:(UILabel *)title detail:(UILabel *)detail value:(UIView *)value chevron:(BOOL)chevron {
+    UIControl *row=[WDGRowControl new];row.translatesAutoresizingMaskIntoConstraints=NO;row.layer.cornerRadius=10;row.layer.cornerCurve=kCACornerCurveContinuous;row.layer.masksToBounds=YES;
     UIImageView *icon=[[UIImageView alloc] initWithImage:[UIImage systemImageNamed:symbol]];
     icon.tintColor=[self accent];icon.contentMode=UIViewContentModeScaleAspectFit;icon.translatesAutoresizingMaskIntoConstraints=NO;icon.userInteractionEnabled=NO;[row addSubview:icon];
-    [NSLayoutConstraint activateConstraints:@[[icon.leadingAnchor constraintEqualToAnchor:row.leadingAnchor constant:16],[icon.centerYAnchor constraintEqualToAnchor:row.centerYAnchor],[icon.widthAnchor constraintEqualToConstant:23],[icon.heightAnchor constraintEqualToConstant:25]]];return icon;
-}
-- (UILabel *)rowTitle:(NSString *)text icon:(UIView *)icon inView:(UIView *)row {
-    UILabel *label=[self label:12 weight:UIFontWeightMedium];label.text=text;label.textColor=UIColor.secondaryLabelColor;label.translatesAutoresizingMaskIntoConstraints=NO;label.userInteractionEnabled=NO;[row addSubview:label];
-    [NSLayoutConstraint activateConstraints:@[[label.leadingAnchor constraintEqualToAnchor:icon.trailingAnchor constant:14],[label.topAnchor constraintEqualToAnchor:row.topAnchor constant:15],[label.trailingAnchor constraintLessThanOrEqualToAnchor:row.trailingAnchor constant:-16]]];return label;
+    NSMutableArray<UIView *> *texts=[NSMutableArray arrayWithObject:title];if(detail)[texts addObject:detail];
+    UIStackView *textStack=[[UIStackView alloc] initWithArrangedSubviews:texts];
+    textStack.axis=UILayoutConstraintAxisVertical;textStack.spacing=2;textStack.translatesAutoresizingMaskIntoConstraints=NO;textStack.userInteractionEnabled=NO;[row addSubview:textStack];
+    NSMutableArray<NSLayoutConstraint *> *rules=[NSMutableArray arrayWithObjects:
+        [icon.leadingAnchor constraintEqualToAnchor:row.leadingAnchor],
+        [icon.centerYAnchor constraintEqualToAnchor:row.centerYAnchor],
+        [icon.widthAnchor constraintEqualToConstant:kWDGIconSide],
+        [icon.heightAnchor constraintEqualToConstant:kWDGIconSide],
+        [textStack.leadingAnchor constraintEqualToAnchor:icon.trailingAnchor constant:12],
+        [textStack.topAnchor constraintEqualToAnchor:row.topAnchor constant:kWDGRowPadding],
+        [textStack.bottomAnchor constraintEqualToAnchor:row.bottomAnchor constant:-kWDGRowPadding],
+        [title.heightAnchor constraintGreaterThanOrEqualToConstant:18],
+        [row.heightAnchor constraintGreaterThanOrEqualToConstant:kWDGRowMinHeight],nil];
+    UIView *right=nil;
+    if(chevron){
+        UIImageView *arrow=[[UIImageView alloc] initWithImage:[UIImage systemImageNamed:@"chevron.right"]];
+        arrow.tintColor=UIColor.tertiaryLabelColor;arrow.contentMode=UIViewContentModeScaleAspectFit;arrow.translatesAutoresizingMaskIntoConstraints=NO;arrow.userInteractionEnabled=NO;[row addSubview:arrow];
+        [rules addObjectsFromArray:@[[arrow.trailingAnchor constraintEqualToAnchor:row.trailingAnchor],[arrow.centerYAnchor constraintEqualToAnchor:row.centerYAnchor],[arrow.widthAnchor constraintEqualToConstant:12],[arrow.heightAnchor constraintEqualToConstant:16]]];
+        right=arrow;
+    }
+    if(value){
+        [row addSubview:value];
+        if(right)[rules addObjectsFromArray:@[[value.trailingAnchor constraintEqualToAnchor:right.leadingAnchor constant:-10],[value.centerYAnchor constraintEqualToAnchor:row.centerYAnchor]]];
+        else [rules addObjectsFromArray:@[[value.trailingAnchor constraintEqualToAnchor:row.trailingAnchor],[value.centerYAnchor constraintEqualToAnchor:row.centerYAnchor]]];
+        right=value;
+    }
+    if(right)[rules addObject:[textStack.trailingAnchor constraintLessThanOrEqualToAnchor:right.leadingAnchor constant:-10]];
+    else [rules addObject:[textStack.trailingAnchor constraintLessThanOrEqualToAnchor:row.trailingAnchor]];
+    [NSLayoutConstraint activateConstraints:rules];return row;
 }
 - (void)becameActive:(NSNotification *)n {[self ensureWindow];}
 - (void)enteredBackground:(NSNotification *)n {[self closePanel];self.window.hidden=YES;}
@@ -119,64 +180,66 @@
 }
 - (void)buildCard {
     UIView *root=self.window.rootViewController.view;
-    self.scrim=[UIControl new];self.scrim.backgroundColor=[UIColor colorWithWhite:0 alpha:0.25];self.scrim.translatesAutoresizingMaskIntoConstraints=NO;self.scrim.accessibilityLabel=@"收起任务面板";self.scrim.accessibilityIdentifier=@"WDG.PanelScrim";
+    self.scrim=[UIControl new];self.scrim.backgroundColor=[UIColor colorWithWhite:0 alpha:0.22];self.scrim.translatesAutoresizingMaskIntoConstraints=NO;self.scrim.accessibilityLabel=@"收起任务面板";self.scrim.accessibilityIdentifier=@"WDG.PanelScrim";
     [self.scrim addTarget:self action:@selector(closePanel) forControlEvents:UIControlEventTouchUpInside];[root addSubview:self.scrim];
     [NSLayoutConstraint activateConstraints:@[[self.scrim.leadingAnchor constraintEqualToAnchor:root.leadingAnchor],[self.scrim.trailingAnchor constraintEqualToAnchor:root.trailingAnchor],[self.scrim.topAnchor constraintEqualToAnchor:root.topAnchor],[self.scrim.bottomAnchor constraintEqualToAnchor:root.bottomAnchor]]];
-    self.card=[UIView new];self.card.backgroundColor=UIColor.systemBackgroundColor;self.card.layer.cornerRadius=22;self.card.layer.cornerCurve=kCACornerCurveContinuous;
-    self.card.layer.shadowColor=UIColor.blackColor.CGColor;self.card.layer.shadowOpacity=0.12;self.card.layer.shadowRadius=28;self.card.layer.shadowOffset=CGSizeMake(0,12);
+    self.card=[UIView new];self.card.backgroundColor=UIColor.systemBackgroundColor;self.card.layer.cornerRadius=kWDGCardRadius;self.card.layer.cornerCurve=kCACornerCurveContinuous;
+    self.card.layer.shadowColor=UIColor.blackColor.CGColor;self.card.layer.shadowOpacity=0.10;self.card.layer.shadowRadius=26;self.card.layer.shadowOffset=CGSizeMake(0,12);
     self.card.translatesAutoresizingMaskIntoConstraints=NO;[root addSubview:self.card];
-    CGFloat width=MIN(376,self.window.bounds.size.width-32),height=MIN(654,self.window.bounds.size.height-110);
-    [NSLayoutConstraint activateConstraints:@[[self.card.centerXAnchor constraintEqualToAnchor:root.centerXAnchor],[self.card.centerYAnchor constraintEqualToAnchor:root.centerYAnchor],[self.card.widthAnchor constraintEqualToConstant:width],[self.card.heightAnchor constraintEqualToConstant:height]]];
-    UIScrollView *scroll=[UIScrollView new];scroll.translatesAutoresizingMaskIntoConstraints=NO;scroll.showsVerticalScrollIndicator=NO;scroll.keyboardDismissMode=UIScrollViewKeyboardDismissModeInteractive;[self.card addSubview:scroll];
-    [NSLayoutConstraint activateConstraints:@[[scroll.leadingAnchor constraintEqualToAnchor:self.card.leadingAnchor constant:20],[scroll.trailingAnchor constraintEqualToAnchor:self.card.trailingAnchor constant:-20],[scroll.topAnchor constraintEqualToAnchor:self.card.topAnchor constant:20],[scroll.bottomAnchor constraintEqualToAnchor:self.card.bottomAnchor constant:-20]]];
-    UIStackView *stack=[UIStackView new];stack.axis=UILayoutConstraintAxisVertical;stack.spacing=16;stack.translatesAutoresizingMaskIntoConstraints=NO;[scroll addSubview:stack];
+    CGFloat width=MIN(376,self.window.bounds.size.width-32);
+    [NSLayoutConstraint activateConstraints:@[[self.card.centerXAnchor constraintEqualToAnchor:root.centerXAnchor],[self.card.centerYAnchor constraintEqualToAnchor:root.centerYAnchor],[self.card.widthAnchor constraintEqualToConstant:width],[self.card.topAnchor constraintGreaterThanOrEqualToAnchor:root.topAnchor constant:16],[self.card.bottomAnchor constraintLessThanOrEqualToAnchor:root.bottomAnchor constant:-16]]];
+    UIScrollView *scroll=[UIScrollView new];scroll.translatesAutoresizingMaskIntoConstraints=NO;scroll.showsVerticalScrollIndicator=NO;scroll.alwaysBounceVertical=NO;scroll.keyboardDismissMode=UIScrollViewKeyboardDismissModeInteractive;scroll.contentInsetAdjustmentBehavior=UIScrollViewContentInsetAdjustmentNever;[self.card addSubview:scroll];
+    [NSLayoutConstraint activateConstraints:@[[scroll.leadingAnchor constraintEqualToAnchor:self.card.leadingAnchor constant:kWDGPadding],[scroll.trailingAnchor constraintEqualToAnchor:self.card.trailingAnchor constant:-kWDGPadding],[scroll.topAnchor constraintEqualToAnchor:self.card.topAnchor constant:kWDGPadding],[scroll.bottomAnchor constraintEqualToAnchor:self.card.bottomAnchor constant:-kWDGPadding]]];
+    NSLayoutConstraint *fitsContent=[scroll.heightAnchor constraintEqualToAnchor:scroll.contentLayoutGuide.heightAnchor];fitsContent.priority=UILayoutPriorityDefaultHigh;
+    NSLayoutConstraint *capHeight=[scroll.heightAnchor constraintLessThanOrEqualToConstant:kWDGCardMaxHeight-2*kWDGPadding];
+    [NSLayoutConstraint activateConstraints:@[fitsContent,capHeight]];
+    UIStackView *stack=[UIStackView new];stack.axis=UILayoutConstraintAxisVertical;stack.spacing=kWDGSectionGap;stack.translatesAutoresizingMaskIntoConstraints=NO;[scroll addSubview:stack];
     [NSLayoutConstraint activateConstraints:@[[stack.leadingAnchor constraintEqualToAnchor:scroll.contentLayoutGuide.leadingAnchor],[stack.trailingAnchor constraintEqualToAnchor:scroll.contentLayoutGuide.trailingAnchor],[stack.topAnchor constraintEqualToAnchor:scroll.contentLayoutGuide.topAnchor],[stack.bottomAnchor constraintEqualToAnchor:scroll.contentLayoutGuide.bottomAnchor],[stack.widthAnchor constraintEqualToAnchor:scroll.frameLayoutGuide.widthAnchor]]];
     UILabel *title=[self label:23 weight:UIFontWeightBold];title.text=@"准备开抢";
     UIButton *more=[self iconButton:@"ellipsis" action:@selector(showMore) label:@"更多选项"],*close=[self iconButton:@"xmark" action:@selector(closePanel) label:@"收起面板"];
     more.accessibilityIdentifier=@"WDG.More";close.accessibilityIdentifier=@"WDG.ClosePanel";
-    UIStackView *header=[[UIStackView alloc] initWithArrangedSubviews:@[title,more,close]];header.axis=UILayoutConstraintAxisHorizontal;header.alignment=UIStackViewAlignmentCenter;header.spacing=4;[stack addArrangedSubview:header];[stack setCustomSpacing:20 afterView:header];
-    UIButton *product=[UIButton buttonWithType:UIButtonTypeSystem];product.backgroundColor=[self softBackground];product.layer.cornerRadius=16;product.layer.cornerCurve=kCACornerCurveContinuous;
+    UIStackView *header=[[UIStackView alloc] initWithArrangedSubviews:@[title,more,close]];header.axis=UILayoutConstraintAxisHorizontal;header.alignment=UIStackViewAlignmentCenter;header.spacing=2;[stack addArrangedSubview:header];
+    self.productLabel=[self label:15 weight:UIFontWeightMedium];self.productLabel.numberOfLines=2;self.productLabel.userInteractionEnabled=NO;
+    self.detailLabel=[self rowDetail:nil];
+    UIControl *product=[self rowWithSymbol:@"bag.fill" title:self.productLabel detail:self.detailLabel value:nil chevron:YES];
     product.accessibilityIdentifier=@"WDG.CartTarget";product.accessibilityLabel=@"选择购物车目标";[product addTarget:self action:@selector(chooseCartTarget) forControlEvents:UIControlEventTouchUpInside];
-    UIImageView *bag=[self rowIcon:@"bag" inView:product];
-    self.productLabel=[self label:15 weight:UIFontWeightSemibold];self.productLabel.numberOfLines=2;self.productLabel.translatesAutoresizingMaskIntoConstraints=NO;self.productLabel.userInteractionEnabled=NO;
-    self.detailLabel=[self label:11 weight:UIFontWeightRegular];self.detailLabel.textColor=UIColor.secondaryLabelColor;self.detailLabel.numberOfLines=2;self.detailLabel.translatesAutoresizingMaskIntoConstraints=NO;self.detailLabel.userInteractionEnabled=NO;
-    UIImageView *chevron=[[UIImageView alloc] initWithImage:[UIImage systemImageNamed:@"chevron.right"]];chevron.tintColor=UIColor.tertiaryLabelColor;chevron.translatesAutoresizingMaskIntoConstraints=NO;chevron.contentMode=UIViewContentModeScaleAspectFit;chevron.userInteractionEnabled=NO;
-    [product addSubview:self.productLabel];[product addSubview:self.detailLabel];[product addSubview:chevron];
-    [NSLayoutConstraint activateConstraints:@[[product.heightAnchor constraintGreaterThanOrEqualToConstant:96],[chevron.trailingAnchor constraintEqualToAnchor:product.trailingAnchor constant:-14],[chevron.centerYAnchor constraintEqualToAnchor:product.centerYAnchor],[chevron.widthAnchor constraintEqualToConstant:7],[chevron.heightAnchor constraintEqualToConstant:12],[self.productLabel.leadingAnchor constraintEqualToAnchor:bag.trailingAnchor constant:14],[self.productLabel.trailingAnchor constraintEqualToAnchor:chevron.leadingAnchor constant:-10],[self.productLabel.topAnchor constraintEqualToAnchor:product.topAnchor constant:15],[self.detailLabel.leadingAnchor constraintEqualToAnchor:self.productLabel.leadingAnchor],[self.detailLabel.trailingAnchor constraintEqualToAnchor:self.productLabel.trailingAnchor],[self.detailLabel.topAnchor constraintEqualToAnchor:self.productLabel.bottomAnchor constant:6],[self.detailLabel.bottomAnchor constraintLessThanOrEqualToAnchor:product.bottomAnchor constant:-14]]];
-    [stack addArrangedSubview:product];[stack setCustomSpacing:20 afterView:product];
     self.datePicker=[UIDatePicker new];self.datePicker.datePickerMode=UIDatePickerModeDateAndTime;self.datePicker.preferredDatePickerStyle=UIDatePickerStyleWheels;self.datePicker.minuteInterval=1;
     self.datePicker.locale=[[NSLocale alloc] initWithLocaleIdentifier:@"zh_CN"];self.datePicker.timeZone=NSTimeZone.localTimeZone;self.datePicker.date=[NSDate dateWithTimeIntervalSinceNow:120];self.datePicker.date=[self selectedMinute];self.datePicker.accessibilityIdentifier=@"WDG.FireAt";
-    self.timeButton=[UIButton buttonWithType:UIButtonTypeSystem];self.timeButton.backgroundColor=[self softBackground];self.timeButton.layer.cornerRadius=16;self.timeButton.layer.cornerCurve=kCACornerCurveContinuous;self.timeButton.accessibilityIdentifier=@"WDG.OpenTimePicker";
-    [self.timeButton addTarget:self action:@selector(showTimePicker) forControlEvents:UIControlEventTouchUpInside];
-    UIImageView *clock=[self rowIcon:@"clock" inView:self.timeButton];UILabel *timeTitle=[self rowTitle:@"开抢时间" icon:clock inView:self.timeButton];
-    self.timeValue=[self label:22 weight:UIFontWeightSemibold];self.timeValue.font=[UIFont monospacedDigitSystemFontOfSize:22 weight:UIFontWeightSemibold];self.timeValue.numberOfLines=1;self.timeValue.adjustsFontSizeToFitWidth=YES;self.timeValue.minimumScaleFactor=0.75;self.timeValue.translatesAutoresizingMaskIntoConstraints=NO;self.timeValue.userInteractionEnabled=NO;[self.timeButton addSubview:self.timeValue];
-    UIImageView *timeChevron=[[UIImageView alloc] initWithImage:[UIImage systemImageNamed:@"chevron.right"]];timeChevron.tintColor=UIColor.tertiaryLabelColor;timeChevron.contentMode=UIViewContentModeScaleAspectFit;timeChevron.translatesAutoresizingMaskIntoConstraints=NO;timeChevron.userInteractionEnabled=NO;[self.timeButton addSubview:timeChevron];
-    [NSLayoutConstraint activateConstraints:@[[self.timeButton.heightAnchor constraintEqualToConstant:86],[self.timeValue.leadingAnchor constraintEqualToAnchor:timeTitle.leadingAnchor],[self.timeValue.topAnchor constraintEqualToAnchor:timeTitle.bottomAnchor constant:5],[self.timeValue.trailingAnchor constraintEqualToAnchor:timeChevron.leadingAnchor constant:-10],[timeChevron.trailingAnchor constraintEqualToAnchor:self.timeButton.trailingAnchor constant:-16],[timeChevron.centerYAnchor constraintEqualToAnchor:self.timeButton.centerYAnchor],[timeChevron.widthAnchor constraintEqualToConstant:7],[timeChevron.heightAnchor constraintEqualToConstant:12]]];
-    [stack addArrangedSubview:self.timeButton];[stack setCustomSpacing:12 afterView:self.timeButton];
-    UIView *money=[UIView new];money.backgroundColor=[self softBackground];money.layer.cornerRadius=16;money.layer.cornerCurve=kCACornerCurveContinuous;
-    UIImageView *moneyIcon=[self rowIcon:@"creditcard" inView:money];UILabel *moneyTitle=[self rowTitle:@"最高实付 · 含运费" icon:moneyIcon inView:money];
-    UILabel *currency=[self label:22 weight:UIFontWeightMedium];currency.text=@"¥";currency.textColor=UIColor.secondaryLabelColor;currency.translatesAutoresizingMaskIntoConstraints=NO;[money addSubview:currency];
-    self.maximumAmount=[UITextField new];self.maximumAmount.placeholder=@"0.00";self.maximumAmount.borderStyle=UITextBorderStyleNone;self.maximumAmount.backgroundColor=UIColor.clearColor;self.maximumAmount.keyboardType=UIKeyboardTypeDecimalPad;self.maximumAmount.textAlignment=NSTextAlignmentLeft;self.maximumAmount.font=[UIFont monospacedDigitSystemFontOfSize:26 weight:UIFontWeightSemibold];self.maximumAmount.textColor=UIColor.labelColor;self.maximumAmount.tintColor=[self accent];self.maximumAmount.adjustsFontSizeToFitWidth=YES;self.maximumAmount.minimumFontSize=18;self.maximumAmount.accessibilityLabel=@"最高实付金额，含运费";self.maximumAmount.accessibilityIdentifier=@"WDG.MaximumTotal";self.maximumAmount.translatesAutoresizingMaskIntoConstraints=NO;[money addSubview:self.maximumAmount];
+    self.timeValue=[self rowValue:nil mono:YES];
+    self.timeButton=[self rowWithSymbol:@"clock" title:[self rowTitle:@"开抢时间"] detail:[self rowDetail:@"点按选择 · 秒归零"] value:self.timeValue chevron:YES];
+    self.timeButton.accessibilityIdentifier=@"WDG.OpenTimePicker";[self.timeButton addTarget:self action:@selector(showTimePicker) forControlEvents:UIControlEventTouchUpInside];
+    self.clockDetail=[self rowDetail:nil];self.clockDetail.text=[self clockSummary:WDGCore.shared.status[@"clock"]];
+    UIControl *clockRow=[self rowWithSymbol:@"arrow.triangle.2.circlepath" title:[self rowTitle:@"时钟校准"] detail:self.clockDetail value:nil chevron:YES];
+    clockRow.accessibilityIdentifier=@"WDG.ClockRow";clockRow.accessibilityLabel=@"时钟校准，点按查看来源与说明";[clockRow addTarget:self action:@selector(readServerClock) forControlEvents:UIControlEventTouchUpInside];
+    UIView *amountBox=[UIView new];amountBox.translatesAutoresizingMaskIntoConstraints=NO;
+    UILabel *currency=[self label:18 weight:UIFontWeightMedium];currency.text=@"¥";currency.textColor=UIColor.secondaryLabelColor;currency.numberOfLines=1;
+    self.maximumAmount=[UITextField new];self.maximumAmount.placeholder=@"0.00";self.maximumAmount.borderStyle=UITextBorderStyleNone;self.maximumAmount.backgroundColor=UIColor.clearColor;self.maximumAmount.keyboardType=UIKeyboardTypeDecimalPad;self.maximumAmount.textAlignment=NSTextAlignmentRight;self.maximumAmount.font=[UIFont monospacedDigitSystemFontOfSize:22 weight:UIFontWeightSemibold];self.maximumAmount.textColor=UIColor.labelColor;self.maximumAmount.tintColor=[self accent];self.maximumAmount.adjustsFontSizeToFitWidth=YES;self.maximumAmount.minimumFontSize=16;self.maximumAmount.accessibilityLabel=@"最高实付金额，含运费";self.maximumAmount.accessibilityIdentifier=@"WDG.MaximumTotal";self.maximumAmount.translatesAutoresizingMaskIntoConstraints=NO;
     UIToolbar *toolbar=[UIToolbar new];toolbar.tintColor=[self accent];[toolbar sizeToFit];toolbar.items=@[[[UIBarButtonItem alloc] initWithBarButtonSystemItem:UIBarButtonSystemItemFlexibleSpace target:nil action:nil],[[UIBarButtonItem alloc] initWithTitle:@"完成" style:UIBarButtonItemStyleDone target:self action:@selector(endEditing)]];self.maximumAmount.inputAccessoryView=toolbar;
-    [NSLayoutConstraint activateConstraints:@[[money.heightAnchor constraintEqualToConstant:86],[currency.leadingAnchor constraintEqualToAnchor:moneyTitle.leadingAnchor],[currency.centerYAnchor constraintEqualToAnchor:self.maximumAmount.centerYAnchor],[self.maximumAmount.leadingAnchor constraintEqualToAnchor:currency.trailingAnchor constant:7],[self.maximumAmount.trailingAnchor constraintEqualToAnchor:money.trailingAnchor constant:-16],[self.maximumAmount.topAnchor constraintEqualToAnchor:moneyTitle.bottomAnchor constant:2],[self.maximumAmount.heightAnchor constraintEqualToConstant:36]]];[stack addArrangedSubview:money];
-    self.lanesBadge=[self label:11 weight:UIFontWeightSemibold];self.lanesBadge.text=@"2路竞速·可能重复下单";self.lanesBadge.textColor=[self accent];self.lanesBadge.hidden=YES;self.lanesBadge.accessibilityIdentifier=@"WDG.ConcurrentLanesBadge";[stack addArrangedSubview:self.lanesBadge];[stack setCustomSpacing:12 afterView:self.lanesBadge];
-    self.statusPill=[UIView new];self.statusPill.layer.cornerRadius=12;self.statusPill.backgroundColor=[[self accent] colorWithAlphaComponent:0.08];
-    self.statusDot=[UIView new];self.statusDot.layer.cornerRadius=3;self.statusDot.backgroundColor=[self accent];self.statusDot.translatesAutoresizingMaskIntoConstraints=NO;[self.statusPill addSubview:self.statusDot];
-    self.statusLabel=[self label:12 weight:UIFontWeightSemibold];self.statusLabel.font=[UIFont monospacedDigitSystemFontOfSize:12 weight:UIFontWeightSemibold];self.statusLabel.textColor=[self accent];self.statusLabel.numberOfLines=1;self.statusLabel.accessibilityIdentifier=@"WDG.Countdown";self.statusLabel.translatesAutoresizingMaskIntoConstraints=NO;[self.statusPill addSubview:self.statusLabel];
-    [NSLayoutConstraint activateConstraints:@[[self.statusPill.heightAnchor constraintEqualToConstant:25],[self.statusDot.leadingAnchor constraintEqualToAnchor:self.statusPill.leadingAnchor constant:10],[self.statusDot.centerYAnchor constraintEqualToAnchor:self.statusPill.centerYAnchor],[self.statusDot.widthAnchor constraintEqualToConstant:6],[self.statusDot.heightAnchor constraintEqualToConstant:6],[self.statusLabel.leadingAnchor constraintEqualToAnchor:self.statusDot.trailingAnchor constant:6],[self.statusLabel.trailingAnchor constraintEqualToAnchor:self.statusPill.trailingAnchor constant:-10],[self.statusLabel.centerYAnchor constraintEqualToAnchor:self.statusPill.centerYAnchor]]];
-    UIStackView *statusRow=[[UIStackView alloc] initWithArrangedSubviews:@[self.statusPill,[UIView new]]];statusRow.axis=UILayoutConstraintAxisHorizontal;[self.statusPill setContentHuggingPriority:UILayoutPriorityRequired forAxis:UILayoutConstraintAxisHorizontal];[self.statusLabel setContentHuggingPriority:UILayoutPriorityRequired forAxis:UILayoutConstraintAxisHorizontal];[stack addArrangedSubview:statusRow];[stack setCustomSpacing:6 afterView:statusRow];
-    self.statusDetail=[self label:11 weight:UIFontWeightRegular];self.statusDetail.textColor=UIColor.secondaryLabelColor;self.statusDetail.numberOfLines=2;[stack addArrangedSubview:self.statusDetail];
-    self.primaryButton=[UIButton buttonWithType:UIButtonTypeSystem];self.primaryButton.backgroundColor=[self accent];self.primaryButton.layer.cornerRadius=16;self.primaryButton.layer.cornerCurve=kCACornerCurveContinuous;[self.primaryButton setTitleColor:UIColor.whiteColor forState:UIControlStateNormal];self.primaryButton.titleLabel.font=[UIFont systemFontOfSize:17 weight:UIFontWeightSemibold];[self.primaryButton setTitle:@"准备抢购" forState:UIControlStateNormal];self.primaryButton.accessibilityIdentifier=@"WDG.ArmTask";[self.primaryButton.heightAnchor constraintEqualToConstant:52].active=YES;[self.primaryButton addTarget:self action:@selector(schedule) forControlEvents:UIControlEventTouchUpInside];[stack addArrangedSubview:self.primaryButton];[stack setCustomSpacing:10 afterView:self.primaryButton];
-    self.cancelButton=[UIButton buttonWithType:UIButtonTypeSystem];self.cancelButton.tintColor=UIColor.secondaryLabelColor;self.cancelButton.titleLabel.font=[UIFont systemFontOfSize:13 weight:UIFontWeightMedium];[self.cancelButton setTitle:@"取消任务" forState:UIControlStateNormal];[self.cancelButton addTarget:self action:@selector(cancel) forControlEvents:UIControlEventTouchUpInside];self.cancelButton.accessibilityIdentifier=@"WDG.CancelTask";self.cancelButton.hidden=YES;[stack addArrangedSubview:self.cancelButton];[stack setCustomSpacing:8 afterView:self.cancelButton];
-    self.versionLabel=[self label:10 weight:UIFontWeightRegular];self.versionLabel.textColor=UIColor.tertiaryLabelColor;self.versionLabel.textAlignment=NSTextAlignmentCenter;[stack addArrangedSubview:self.versionLabel];
+    [amountBox addSubview:currency];[amountBox addSubview:self.maximumAmount];
+    [NSLayoutConstraint activateConstraints:@[[currency.leadingAnchor constraintEqualToAnchor:amountBox.leadingAnchor],[currency.centerYAnchor constraintEqualToAnchor:amountBox.centerYAnchor],[self.maximumAmount.leadingAnchor constraintEqualToAnchor:currency.trailingAnchor constant:4],[self.maximumAmount.trailingAnchor constraintEqualToAnchor:amountBox.trailingAnchor],[self.maximumAmount.centerYAnchor constraintEqualToAnchor:amountBox.centerYAnchor],[self.maximumAmount.widthAnchor constraintEqualToConstant:104],[self.maximumAmount.heightAnchor constraintEqualToConstant:32],[amountBox.heightAnchor constraintEqualToConstant:32]]];
+    [amountBox addGestureRecognizer:[[UITapGestureRecognizer alloc] initWithTarget:self action:@selector(focusAmount)]];
+    UIView *money=[self rowWithSymbol:@"creditcard" title:[self rowTitle:@"最高实付"] detail:[self rowDetail:@"含运费 · 超上限即停"] value:amountBox chevron:NO];
+    money.accessibilityIdentifier=@"WDG.AmountRow";
+    UIStackView *rows=[[UIStackView alloc] initWithArrangedSubviews:@[product,[self hairline],self.timeButton,[self hairline],clockRow,[self hairline],money]];
+    rows.axis=UILayoutConstraintAxisVertical;rows.spacing=0;[stack addArrangedSubview:rows];
+    self.lanesBadge=[self label:11 weight:UIFontWeightSemibold];self.lanesBadge.text=@"2 路并发 · 可能重复下单";self.lanesBadge.textColor=[self accent];self.lanesBadge.numberOfLines=1;self.lanesBadge.hidden=YES;self.lanesBadge.accessibilityIdentifier=@"WDG.ConcurrentLanesBadge";[stack addArrangedSubview:self.lanesBadge];
+    self.statusDot=[UIView new];self.statusDot.layer.cornerRadius=3;self.statusDot.backgroundColor=[self accent];self.statusDot.translatesAutoresizingMaskIntoConstraints=NO;
+    [self.statusDot.widthAnchor constraintEqualToConstant:6].active=YES;[self.statusDot.heightAnchor constraintEqualToConstant:6].active=YES;
+    self.statusLabel=[self label:12 weight:UIFontWeightMedium];self.statusLabel.font=[UIFont monospacedDigitSystemFontOfSize:12 weight:UIFontWeightMedium];self.statusLabel.textColor=UIColor.secondaryLabelColor;self.statusLabel.numberOfLines=1;self.statusLabel.adjustsFontSizeToFitWidth=YES;self.statusLabel.minimumScaleFactor=0.85;self.statusLabel.accessibilityIdentifier=@"WDG.Countdown";
+    UIStackView *statusRow=[[UIStackView alloc] initWithArrangedSubviews:@[self.statusDot,self.statusLabel]];statusRow.axis=UILayoutConstraintAxisHorizontal;statusRow.alignment=UIStackViewAlignmentCenter;statusRow.spacing=6;[stack addArrangedSubview:statusRow];
+    self.statusDetail=[self label:12 weight:UIFontWeightRegular];self.statusDetail.textColor=UIColor.secondaryLabelColor;self.statusDetail.numberOfLines=1;self.statusDetail.adjustsFontSizeToFitWidth=YES;self.statusDetail.minimumScaleFactor=0.85;self.statusDetail.hidden=YES;[stack addArrangedSubview:self.statusDetail];
+    self.primaryButton=[UIButton buttonWithType:UIButtonTypeSystem];self.primaryButton.backgroundColor=[self accent];self.primaryButton.layer.cornerRadius=kWDGButtonRadius;self.primaryButton.layer.cornerCurve=kCACornerCurveContinuous;[self.primaryButton setTitleColor:UIColor.whiteColor forState:UIControlStateNormal];self.primaryButton.titleLabel.font=[UIFont systemFontOfSize:16 weight:UIFontWeightSemibold];[self.primaryButton setTitle:@"准备抢购" forState:UIControlStateNormal];self.primaryButton.accessibilityIdentifier=@"WDG.ArmTask";[self.primaryButton.heightAnchor constraintEqualToConstant:kWDGButtonHeight].active=YES;[self.primaryButton addTarget:self action:@selector(schedule) forControlEvents:UIControlEventTouchUpInside];[stack addArrangedSubview:self.primaryButton];
+    self.cancelButton=[UIButton buttonWithType:UIButtonTypeSystem];self.cancelButton.tintColor=UIColor.secondaryLabelColor;self.cancelButton.titleLabel.font=[UIFont systemFontOfSize:13 weight:UIFontWeightMedium];[self.cancelButton setTitle:@"取消任务" forState:UIControlStateNormal];[self.cancelButton addTarget:self action:@selector(cancel) forControlEvents:UIControlEventTouchUpInside];self.cancelButton.accessibilityIdentifier=@"WDG.CancelTask";self.cancelButton.hidden=YES;[stack addArrangedSubview:self.cancelButton];
+    self.versionLabel=[self label:10 weight:UIFontWeightRegular];self.versionLabel.textColor=UIColor.tertiaryLabelColor;self.versionLabel.textAlignment=NSTextAlignmentCenter;self.versionLabel.numberOfLines=1;[stack addArrangedSubview:self.versionLabel];
     [self updateTimeDisplay];
 }
+- (void)focusAmount {if(self.maximumAmount.enabled)[self.maximumAmount becomeFirstResponder];}
 - (void)endEditing {[self.card endEditing:YES];}
 - (void)updateTimeDisplay {
     NSDate *date=[self selectedMinute];NSCalendar *calendar=NSCalendar.currentCalendar;NSDateFormatter *df=[NSDateFormatter new];df.locale=[[NSLocale alloc] initWithLocaleIdentifier:@"zh_CN"];df.timeZone=self.datePicker.timeZone?:NSTimeZone.localTimeZone;
     df.dateFormat=@"HH:mm";NSString *clock=[df stringFromDate:date];NSString *day=nil;
     if([calendar isDateInToday:date])day=@"今天";else if([calendar isDateInTomorrow:date])day=@"明天";else {df.dateFormat=@"M月d日";day=[df stringFromDate:date];}
-    self.timeValue.text=[NSString stringWithFormat:@"%@  %@",day,clock];self.timeButton.accessibilityLabel=[NSString stringWithFormat:@"开抢时间，%@，精确到整分钟",self.timeValue.text];
+    self.timeValue.text=[NSString stringWithFormat:@"%@ %@",day,clock];self.timeButton.accessibilityLabel=[NSString stringWithFormat:@"开抢时间，%@，精确到整分钟",self.timeValue.text];
 }
 - (void)showTimePicker {
     if(!self.timeButton.enabled||self.timeSheet)return;[self endEditing];self.dateBeforeEditing=self.datePicker.date;
@@ -205,20 +268,22 @@
     if(!self.card)return;
     NSArray *items=WDGCartSelectedLines();NSDictionary *state=WDGCore.shared.status,*task=state[@"task"];NSString *phase=task[@"state"];
     NSString *source=[WDGCartDiagnostics()[@"selectionSource"] isEqual:@"assistant_explicit"]?@"手动指定":@"购物车勾选";
-    if(items.count){NSDictionary *first=items.firstObject;self.productLabel.text=first[@"title"]?:@"购物车商品";self.detailLabel.text=[NSString stringWithFormat:@"%@ · %@ × %@%@",source,first[@"skuTitle"]?:@"未选规格",first[@"quantity"]?:@"?",items.count>1?[NSString stringWithFormat:@"\n共 %lu 个条目 · 点此查看",(unsigned long)items.count]:@""];}
-    else {self.productLabel.text=@"选择要抢的商品";self.detailLabel.text=@"默认跟随购物车勾选 · 点此手动指定";}
+    if(items.count){NSDictionary *first=items.firstObject;self.productLabel.text=first[@"title"]?:@"购物车商品";self.detailLabel.text=[NSString stringWithFormat:@"%@ · %@ × %@%@",source,first[@"skuTitle"]?:@"未选规格",first[@"quantity"]?:@"?",items.count>1?[NSString stringWithFormat:@" · 共 %lu 条",(unsigned long)items.count]:@""];}
+    else {self.productLabel.text=@"选择要抢的商品";self.detailLabel.text=@"跟随购物车勾选 · 点此手动指定";}
     BOOL active=[@[@"armed",@"firing",@"preheating",@"waitingSale",@"sending"] containsObject:phase],unknown=[phase isEqual:@"unknown"];
-    if([@[@"armed",@"waitingSale"] containsObject:phase]){NSTimeInterval s=MAX(0,[task[@"dueAt"] doubleValue]-NSDate.date.timeIntervalSince1970);self.statusLabel.text=[NSString stringWithFormat:@"距离开抢  %02ld:%02ld:%02ld",(long)(s/3600),(long)((NSInteger)s/60%60),(long)((NSInteger)s%60)];}
-    else self.statusLabel.text=@{@"idle":@"待准备",@"firing":@"准备中",@"preheating":@"正在确认商品",@"sending":@"已提交 · 等待结果",@"apiSucceeded":@"接口已返回成功",@"failed":@"本次未完成",@"cancelled":@"任务已取消",@"fired":@"本地演练完成",@"unknown":@"订单结果待核对"}[phase]?:@"待准备";
+    if([@[@"armed",@"waitingSale"] containsObject:phase]){NSTimeInterval s=MAX(0,[task[@"dueAt"] doubleValue]-NSDate.date.timeIntervalSince1970);self.statusLabel.text=[NSString stringWithFormat:@"距离开抢 %02ld:%02ld:%02ld · 保持前台",(long)(s/3600),(long)((NSInteger)s/60%60),(long)((NSInteger)s%60)];}
+    else self.statusLabel.text=@{@"idle":@"待准备 · 保持微店前台",@"firing":@"准备中 · 正在提交",@"preheating":@"正在确认商品",@"sending":@"已提交 · 等待结果",@"apiSucceeded":@"接口已返回成功 · 请核对订单",@"failed":@"本次未完成",@"cancelled":@"任务已取消",@"fired":@"本地演练完成",@"unknown":@"订单结果待核对"}[phase]?:@"待准备";
     NSUInteger lanes=(active||unknown)?MAX((NSUInteger)1,[task[@"concurrentLanes"] unsignedIntegerValue]):self.concurrentLanes;
     self.lanesBadge.hidden=lanes!=2;
-    self.statusDetail.text=[task[@"reason"] length]?task[@"reason"]:(lanes==2?@"前台运行 · 同一商品最多 2 单\n已发请求可能各自成功，请核对订单":@"保持微店前台 · 到点提交 1 次\n实付超上限或商品未开放会停止");
+    NSString *reason=task[@"reason"];
+    self.statusDetail.text=reason;self.statusDetail.hidden=!reason.length;
     UIColor *statusColor=[phase isEqual:@"apiSucceeded"]?UIColor.systemGreenColor:((unknown||[phase isEqual:@"failed"])?UIColor.systemOrangeColor:[self accent]);
-    self.statusLabel.textColor=statusColor;self.statusDot.backgroundColor=statusColor;self.statusPill.backgroundColor=[statusColor colorWithAlphaComponent:0.09];
+    self.statusDot.backgroundColor=statusColor;self.statusLabel.textColor=UIColor.secondaryLabelColor;
     self.primaryButton.enabled=!active&&!unknown;self.primaryButton.alpha=self.primaryButton.enabled?1:0.52;
     [self.primaryButton setTitle:active?@"已准备，等待执行":(unknown?@"请先核对订单结果":@"准备抢购") forState:UIControlStateNormal];
     self.cancelButton.hidden=!active;self.datePicker.enabled=!active&&!unknown;self.timeButton.enabled=!active&&!unknown;self.timeButton.alpha=self.timeButton.enabled?1:0.6;self.maximumAmount.enabled=!active&&!unknown;
-    self.versionLabel.text=[NSString stringWithFormat:@"新任务：%@\n微店助手 %@ · %@",[self clockSummary:state[@"clock"]],state[@"version"],state[@"build"]];
+    self.clockDetail.text=[self clockSummary:state[@"clock"]];
+    self.versionLabel.text=[NSString stringWithFormat:@"微店助手 %@ · %@",state[@"version"],state[@"build"]];
 }
 - (void)alert:(NSString *)title message:(NSString *)message {
     UIAlertController *a=[UIAlertController alertControllerWithTitle:title message:message preferredStyle:UIAlertControllerStyleAlert];[a addAction:[UIAlertAction actionWithTitle:@"知道了" style:UIAlertActionStyleDefault handler:nil]];[self.window.rootViewController presentViewController:a animated:YES completion:nil];
@@ -276,8 +341,28 @@
         [df stringFromDate:date],zone.name,native?@"校正":@"执行",[df stringFromDate:localDue],mode,[self clockSummary:clock],clock[@"source"]?:@"none",clock[@"status"]?:@"unavailable",clock[@"reason"]?:@""];
 }
 - (void)readServerClock {
-    [WDGCore.shared refreshServerClock];NSDictionary *clock=WDGCore.shared.status[@"clock"];
-    [self alert:[self clockSummary:clock] message:[NSString stringWithFormat:@"来源：%@ · %@\n%@\n\n只读取微店自然更新的原生样本，不发起网络校准、不测 RTT、不修改系统时钟。读取快照有效期 5 秒；原生缓存按更新状态判定，显示的是偏差，不承诺绝对毫秒精度。仅影响下一笔任务，已设置时刻保持不变；确认与执行前会重新核对。",clock[@"source"]?:@"none",clock[@"status"]?:@"unavailable",clock[@"reason"]?:@""]];
+    [WDGCore.shared refreshServerClock];NSDictionary *clock=WDGCore.shared.status[@"clock"];[self refresh];
+    BOOL native=[clock[@"valid"] boolValue]&&[clock[@"status"] isEqual:@"native_recent"];
+    NSString *title=native?[self clockSummary:clock]:@"本地时间 · 未校准";
+    NSString *source=clock[@"source"]?:@"none";
+    if([source isEqual:@"WDTNServerClockProofreader"])source=@"微店原生";
+    NSMutableString *message=[NSMutableString stringWithFormat:@"来源 %@ · %@",source,clock[@"status"]?:@"unavailable"];
+    [message appendString:native?@"\n快照 5 秒内有效":@"\n无有效样本 · 按本地时间执行"];
+    NSString *reason=clock[@"reason"],*note=@"偏差不代表毫秒精度";
+    if(!native&&reason.length)note=[NSString stringWithFormat:@"原因 %@",reason.length>20?[[reason substringToIndex:20] stringByAppendingString:@"…"]:reason];
+    [message appendFormat:@"\n%@",note];
+    [message appendString:@"\n不联网 · 不改系统时间"];
+    UIAlertController *detail=[UIAlertController alertControllerWithTitle:title message:message preferredStyle:UIAlertControllerStyleAlert];
+    __weak UIAlertController *weakDetail=detail;
+    [detail addAction:[UIAlertAction actionWithTitle:@"说明" style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *action){
+        UIAlertController *alert=weakDetail;if(!alert)return;
+        [alert dismissViewControllerAnimated:YES completion:^{[self explainServerClock];}];
+    }]];
+    [detail addAction:[UIAlertAction actionWithTitle:@"知道了" style:UIAlertActionStyleCancel handler:nil]];
+    [self.window.rootViewController presentViewController:detail animated:YES completion:nil];
+}
+- (void)explainServerClock {
+    [self alert:@"时钟说明" message:@"只读微店缓存样本，不联网。\n不测 RTT，不改系统时钟。\n显示偏差，非毫秒精度。\n只影响下一笔任务。\n确认与执行前会重核对。"];
 }
 - (void)validateCartParameters {
     NSDecimalNumber *maximum=[self maximumValue];if(!maximum)return;

@@ -639,7 +639,7 @@ static const CGFloat kWDGMenuCancelGap=8;
     chevron.tintColor=UIColor.tertiaryLabelColor;chevron.translatesAutoresizingMaskIntoConstraints=NO;chevron.userInteractionEnabled=NO;
     [row addSubview:chevron];
     [NSLayoutConstraint activateConstraints:@[
-        [chevron.trailingAnchor constraintEqualToAnchor:row.trailingAnchor],
+        [chevron.trailingAnchor constraintEqualToAnchor:row.trailingAnchor constant:-4],
         [chevron.centerYAnchor constraintEqualToAnchor:row.centerYAnchor]]];
     return row;
 }
@@ -659,7 +659,7 @@ static const CGFloat kWDGMenuCancelGap=8;
         [label.leadingAnchor constraintEqualToAnchor:row.leadingAnchor],
         [label.centerYAnchor constraintEqualToAnchor:row.centerYAnchor],
         [label.trailingAnchor constraintLessThanOrEqualToAnchor:toggle.leadingAnchor constant:-10],
-        [toggle.trailingAnchor constraintEqualToAnchor:row.trailingAnchor],
+        [toggle.trailingAnchor constraintEqualToAnchor:row.trailingAnchor constant:-12],
         [toggle.centerYAnchor constraintEqualToAnchor:row.centerYAnchor],
         [row.heightAnchor constraintGreaterThanOrEqualToConstant:kWDGMenuRowHeight]]];
     [row addTarget:self action:@selector(tapSwitchRow:) forControlEvents:UIControlEventTouchUpInside];

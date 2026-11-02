@@ -31,6 +31,116 @@ static const CGFloat kWDGCardMaxHeight=480;
 }
 @end
 
+typedef void (^WDGSheetBlock)(void);
+
+static UIColor *WDGSheetAccent(void) {return [UIColor colorWithRed:0.90 green:0.14 blue:0.30 alpha:1];}
+static NSDictionary *WDGSheetRow(NSString *label,NSString *value,BOOL mono) {return @{@"label":label?:@"",@"value":value?:@"",@"mono":@(mono)};}
+
+@interface WDGSheetController : UIViewController
+@property(nonatomic,copy) NSString *sheetTitle;
+@property(nonatomic,copy) NSArray<NSDictionary *> *sheetRows;
+@property(nonatomic,copy) NSString *sheetFootnote;
+@property(nonatomic,assign) BOOL footnoteWarning;
+@property(nonatomic,copy) NSString *primaryTitle;
+@property(nonatomic,copy) NSString *secondaryTitle;
+@property(nonatomic,copy) WDGSheetBlock primaryAction;
+@property(nonatomic,copy) WDGSheetBlock secondaryAction;
++ (instancetype)sheetWithTitle:(NSString *)title rows:(NSArray<NSDictionary *> *)rows footnote:(NSString *)footnote warning:(BOOL)warning primaryTitle:(NSString *)primaryTitle primaryAction:(WDGSheetBlock)primaryAction secondaryTitle:(NSString *)secondaryTitle;
+@end
+
+@implementation WDGSheetController
++ (instancetype)sheetWithTitle:(NSString *)title rows:(NSArray<NSDictionary *> *)rows footnote:(NSString *)footnote warning:(BOOL)warning primaryTitle:(NSString *)primaryTitle primaryAction:(WDGSheetBlock)primaryAction secondaryTitle:(NSString *)secondaryTitle {
+    WDGSheetController *sheet=[self new];
+    sheet.modalPresentationStyle=UIModalPresentationPageSheet;
+    sheet.sheetTitle=title;sheet.sheetRows=rows;sheet.sheetFootnote=footnote;sheet.footnoteWarning=warning;
+    sheet.primaryTitle=primaryTitle;sheet.primaryAction=primaryAction;sheet.secondaryTitle=secondaryTitle;
+    return sheet;
+}
+- (void)viewDidLoad {
+    [super viewDidLoad];
+    self.view.backgroundColor=UIColor.systemBackgroundColor;self.view.accessibilityIdentifier=@"WDG.Sheet";
+    UIScrollView *scroll=[UIScrollView new];scroll.translatesAutoresizingMaskIntoConstraints=NO;
+    scroll.showsVerticalScrollIndicator=NO;scroll.showsHorizontalScrollIndicator=NO;scroll.alwaysBounceVertical=NO;scroll.alwaysBounceHorizontal=NO;
+    scroll.contentInsetAdjustmentBehavior=UIScrollViewContentInsetAdjustmentNever;[self.view addSubview:scroll];
+    UILayoutGuide *safe=self.view.safeAreaLayoutGuide;
+    [NSLayoutConstraint activateConstraints:@[
+        [scroll.leadingAnchor constraintEqualToAnchor:safe.leadingAnchor constant:kWDGPadding],
+        [scroll.trailingAnchor constraintEqualToAnchor:safe.trailingAnchor constant:-kWDGPadding],
+        [scroll.topAnchor constraintEqualToAnchor:safe.topAnchor constant:kWDGPadding],
+        [scroll.bottomAnchor constraintEqualToAnchor:safe.bottomAnchor constant:-kWDGPadding]]];
+    UIStackView *stack=[UIStackView new];stack.axis=UILayoutConstraintAxisVertical;stack.spacing=12;stack.translatesAutoresizingMaskIntoConstraints=NO;[scroll addSubview:stack];
+    [NSLayoutConstraint activateConstraints:@[
+        [stack.leadingAnchor constraintEqualToAnchor:scroll.contentLayoutGuide.leadingAnchor],
+        [stack.trailingAnchor constraintEqualToAnchor:scroll.contentLayoutGuide.trailingAnchor],
+        [stack.topAnchor constraintEqualToAnchor:scroll.contentLayoutGuide.topAnchor],
+        [stack.bottomAnchor constraintEqualToAnchor:scroll.contentLayoutGuide.bottomAnchor],
+        [stack.widthAnchor constraintEqualToAnchor:scroll.frameLayoutGuide.widthAnchor]]];
+    UILabel *title=[UILabel new];title.translatesAutoresizingMaskIntoConstraints=NO;title.font=[UIFont systemFontOfSize:17 weight:UIFontWeightSemibold];title.textColor=UIColor.labelColor;title.numberOfLines=0;title.text=self.sheetTitle;
+    [stack addArrangedSubview:title];[stack setCustomSpacing:14 afterView:title];
+    if(self.sheetRows.count){
+        NSMutableArray<UIView *> *views=[NSMutableArray array];
+        [self.sheetRows enumerateObjectsUsingBlock:^(NSDictionary *row,NSUInteger index,__unused BOOL *stop){if(index>0)[views addObject:[self separatorLine]];[views addObject:[self rowView:row]];}];
+        UIStackView *rows=[[UIStackView alloc] initWithArrangedSubviews:views];rows.axis=UILayoutConstraintAxisVertical;rows.spacing=0;rows.translatesAutoresizingMaskIntoConstraints=NO;
+        [stack addArrangedSubview:rows];[stack setCustomSpacing:14 afterView:rows];
+    }
+    if(self.sheetFootnote.length){
+        UILabel *note=[UILabel new];note.translatesAutoresizingMaskIntoConstraints=NO;note.font=[UIFont systemFontOfSize:12 weight:UIFontWeightRegular];note.numberOfLines=0;note.text=self.sheetFootnote;
+        note.textColor=self.footnoteWarning?UIColor.systemOrangeColor:UIColor.secondaryLabelColor;
+        [stack addArrangedSubview:note];[stack setCustomSpacing:16 afterView:note];
+    }
+    if(self.primaryTitle.length){
+        UIButton *primary=[UIButton buttonWithType:UIButtonTypeSystem];primary.translatesAutoresizingMaskIntoConstraints=NO;
+        primary.backgroundColor=WDGSheetAccent();primary.layer.cornerRadius=kWDGButtonRadius;primary.layer.cornerCurve=kCACornerCurveContinuous;primary.clipsToBounds=YES;
+        [primary setTitle:self.primaryTitle forState:UIControlStateNormal];[primary setTitleColor:UIColor.whiteColor forState:UIControlStateNormal];
+        primary.titleLabel.font=[UIFont systemFontOfSize:16 weight:UIFontWeightSemibold];
+        [primary.heightAnchor constraintEqualToConstant:kWDGButtonHeight].active=YES;
+        [primary addTarget:self action:@selector(tapPrimary) forControlEvents:UIControlEventTouchUpInside];primary.accessibilityIdentifier=@"WDG.SheetPrimary";
+        [stack addArrangedSubview:primary];[stack setCustomSpacing:4 afterView:primary];
+    }
+    if(self.secondaryTitle.length){
+        UIButton *secondary=[UIButton buttonWithType:UIButtonTypeSystem];secondary.translatesAutoresizingMaskIntoConstraints=NO;secondary.tintColor=UIColor.secondaryLabelColor;
+        [secondary setTitle:self.secondaryTitle forState:UIControlStateNormal];secondary.titleLabel.font=[UIFont systemFontOfSize:15 weight:UIFontWeightRegular];
+        [secondary.heightAnchor constraintEqualToConstant:40].active=YES;
+        [secondary addTarget:self action:@selector(tapSecondary) forControlEvents:UIControlEventTouchUpInside];secondary.accessibilityIdentifier=@"WDG.SheetSecondary";
+        [stack addArrangedSubview:secondary];
+    }
+}
+- (UIView *)separatorLine {
+    UIView *line=[UIView new];line.translatesAutoresizingMaskIntoConstraints=NO;line.userInteractionEnabled=NO;
+    line.backgroundColor=[UIColor.separatorColor colorWithAlphaComponent:0.5];
+    [line.heightAnchor constraintEqualToConstant:kWDGHairlineHeight].active=YES;return line;
+}
+- (UIView *)rowView:(NSDictionary *)row {
+    UIView *box=[UIView new];box.translatesAutoresizingMaskIntoConstraints=NO;
+    UILabel *left=[UILabel new];left.translatesAutoresizingMaskIntoConstraints=NO;left.font=[UIFont systemFontOfSize:13 weight:UIFontWeightRegular];left.textColor=UIColor.secondaryLabelColor;left.text=row[@"label"];left.numberOfLines=1;
+    [left setContentCompressionResistancePriority:UILayoutPriorityRequired forAxis:UILayoutConstraintAxisHorizontal];
+    UILabel *right=[UILabel new];right.translatesAutoresizingMaskIntoConstraints=NO;
+    right.font=[row[@"mono"] boolValue]?[UIFont monospacedDigitSystemFontOfSize:15 weight:UIFontWeightSemibold]:[UIFont systemFontOfSize:15 weight:UIFontWeightSemibold];
+    right.textColor=UIColor.labelColor;right.text=row[@"value"];right.numberOfLines=1;right.textAlignment=NSTextAlignmentRight;
+    right.lineBreakMode=[row[@"middle"] boolValue]?NSLineBreakByTruncatingMiddle:NSLineBreakByTruncatingTail;
+    [right setContentCompressionResistancePriority:UILayoutPriorityDefaultLow forAxis:UILayoutConstraintAxisHorizontal];
+    [box addSubview:left];[box addSubview:right];
+    [NSLayoutConstraint activateConstraints:@[
+        [left.leadingAnchor constraintEqualToAnchor:box.leadingAnchor],
+        [left.centerYAnchor constraintEqualToAnchor:box.centerYAnchor],
+        [right.trailingAnchor constraintEqualToAnchor:box.trailingAnchor],
+        [right.centerYAnchor constraintEqualToAnchor:box.centerYAnchor],
+        [left.trailingAnchor constraintLessThanOrEqualToAnchor:right.leadingAnchor constant:-12],
+        [box.heightAnchor constraintEqualToConstant:44]]];
+    return box;
+}
+- (void)tapPrimary {
+    if(!self.view.window)return;
+    WDGSheetBlock action=[self.primaryAction copy];self.primaryAction=nil;self.view.userInteractionEnabled=NO;
+    [self dismissViewControllerAnimated:YES completion:^{if(action)action();}];
+}
+- (void)tapSecondary {
+    if(!self.view.window)return;
+    WDGSheetBlock action=[self.secondaryAction copy];self.secondaryAction=nil;self.view.userInteractionEnabled=NO;
+    [self dismissViewControllerAnimated:YES completion:^{if(action)action();}];
+}
+@end
+
 @interface WDGPanel : NSObject <UIAdaptivePresentationControllerDelegate>
 @property(nonatomic,strong) WDGPassWindow *window;
 @property(nonatomic,weak) UIWindow *previousKey;
@@ -286,7 +396,14 @@ static const CGFloat kWDGCardMaxHeight=480;
     self.versionLabel.text=[NSString stringWithFormat:@"微店助手 %@ · %@",state[@"version"],state[@"build"]];
 }
 - (void)alert:(NSString *)title message:(NSString *)message {
-    UIAlertController *a=[UIAlertController alertControllerWithTitle:title message:message preferredStyle:UIAlertControllerStyleAlert];[a addAction:[UIAlertAction actionWithTitle:@"知道了" style:UIAlertActionStyleDefault handler:nil]];[self.window.rootViewController presentViewController:a animated:YES completion:nil];
+    NSString *line=[[(message?:@"") stringByReplacingOccurrencesOfString:@"\n" withString:@" "] stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
+    UIAlertController *a=[UIAlertController alertControllerWithTitle:title message:line preferredStyle:UIAlertControllerStyleAlert];[a addAction:[UIAlertAction actionWithTitle:@"知道了" style:UIAlertActionStyleDefault handler:nil]];[self.window.rootViewController presentViewController:a animated:YES completion:nil];
+}
+- (void)presentSheet:(WDGSheetController *)sheet {
+    UISheetPresentationController *presentation=sheet.sheetPresentationController;
+    presentation.detents=@[UISheetPresentationControllerDetent.mediumDetent];
+    presentation.prefersGrabberVisible=YES;presentation.preferredCornerRadius=kWDGCardRadius;
+    [self.window.rootViewController presentViewController:sheet animated:YES completion:nil];
 }
 - (void)chooseCartTarget {
     NSArray *rows=[[NSArray alloc] initWithArray:WDGCartCandidates() copyItems:YES];
@@ -332,37 +449,51 @@ static const CGFloat kWDGCardMaxHeight=480;
     }
     return local;
 }
-- (NSString *)clockReview:(NSDictionary *)clock announced:(NSDate *)date localDue:(NSDate *)localDue {
+- (NSString *)clockSourceText:(NSDictionary *)clock {
+    NSString *source=clock[@"source"]?:@"none";
+    return [source isEqual:@"WDTNServerClockProofreader"]?@"微店原生":source;
+}
+- (NSArray<NSDictionary *> *)clockReviewRows:(NSDictionary *)clock announced:(NSDate *)date localDue:(NSDate *)localDue {
     NSTimeZone *zone=self.datePicker.timeZone?:NSTimeZone.localTimeZone;
-    NSDateFormatter *df=[NSDateFormatter new];df.locale=[[NSLocale alloc] initWithLocaleIdentifier:@"zh_CN"];df.timeZone=zone;df.dateFormat=@"yyyy-MM-dd HH:mm:ss.SSS ZZZZ";
+    NSDateFormatter *df=[NSDateFormatter new];df.locale=[[NSLocale alloc] initWithLocaleIdentifier:@"zh_CN"];df.timeZone=zone;df.dateFormat=@"yyyy-MM-dd HH:mm:ss";
     BOOL native=[clock[@"valid"] boolValue]&&[clock[@"status"] isEqual:@"native_recent"];
-    NSString *mode=native?@"按微店时钟校正一次":@"回退：明确按本地时间运行（不应用新样本）";
-    return [NSString stringWithFormat:@"公告时刻：%@\n时区：%@\n本地%@时刻：%@\n%@\n%@\n来源：%@ · %@\n%@\n只读 App 已有样本，未网络测 RTT；偏差不是精度保证。",
-        [df stringFromDate:date],zone.name,native?@"校正":@"执行",[df stringFromDate:localDue],mode,[self clockSummary:clock],clock[@"source"]?:@"none",clock[@"status"]?:@"unavailable",clock[@"reason"]?:@""];
+    NSMutableArray<NSDictionary *> *rows=[NSMutableArray array];
+    [rows addObject:WDGSheetRow(@"公告时刻",[df stringFromDate:date],YES)];
+    [rows addObject:WDGSheetRow(native?@"本地校正时刻":@"本地执行时刻",[df stringFromDate:localDue],YES)];
+    [rows addObject:WDGSheetRow(@"时区",zone.name,NO)];
+    [rows addObject:WDGSheetRow(@"模式",native?@"按微店时钟校正一次":@"回退 · 按本地时间运行",NO)];
+    [rows addObject:WDGSheetRow(@"时钟",[self clockSummary:clock],NO)];
+    [rows addObject:WDGSheetRow(@"来源",[NSString stringWithFormat:@"%@ · %@",[self clockSourceText:clock],clock[@"status"]?:@"unavailable"],NO)];
+    NSString *reason=clock[@"reason"];if(reason.length)[rows addObject:WDGSheetRow(@"原因",reason,NO)];
+    return rows;
 }
 - (void)readServerClock {
     [WDGCore.shared refreshServerClock];NSDictionary *clock=WDGCore.shared.status[@"clock"];[self refresh];
     BOOL native=[clock[@"valid"] boolValue]&&[clock[@"status"] isEqual:@"native_recent"];
     NSString *title=native?[self clockSummary:clock]:@"本地时间 · 未校准";
-    NSString *source=clock[@"source"]?:@"none";
-    if([source isEqual:@"WDTNServerClockProofreader"])source=@"微店原生";
-    NSMutableString *message=[NSMutableString stringWithFormat:@"来源 %@ · %@",source,clock[@"status"]?:@"unavailable"];
-    [message appendString:native?@"\n快照 5 秒内有效":@"\n无有效样本 · 按本地时间执行"];
-    NSString *reason=clock[@"reason"],*note=@"偏差不代表毫秒精度";
-    if(!native&&reason.length)note=[NSString stringWithFormat:@"原因 %@",reason.length>20?[[reason substringToIndex:20] stringByAppendingString:@"…"]:reason];
-    [message appendFormat:@"\n%@",note];
-    [message appendString:@"\n不联网 · 不改系统时间"];
-    UIAlertController *detail=[UIAlertController alertControllerWithTitle:title message:message preferredStyle:UIAlertControllerStyleAlert];
-    __weak UIAlertController *weakDetail=detail;
-    [detail addAction:[UIAlertAction actionWithTitle:@"说明" style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *action){
-        UIAlertController *alert=weakDetail;if(!alert)return;
-        [alert dismissViewControllerAnimated:YES completion:^{[self explainServerClock];}];
-    }]];
-    [detail addAction:[UIAlertAction actionWithTitle:@"知道了" style:UIAlertActionStyleCancel handler:nil]];
-    [self.window.rootViewController presentViewController:detail animated:YES completion:nil];
+    NSString *status=native?@"有效（5 秒内）":(clock[@"status"]?:@"unavailable");
+    NSMutableArray<NSDictionary *> *rows=[NSMutableArray array];
+    [rows addObject:WDGSheetRow(@"来源",[self clockSourceText:clock],NO)];
+    [rows addObject:WDGSheetRow(@"状态",status,NO)];
+    if(native){
+        NSString *deviation=[clock[@"offsetMs"] isKindOfClass:NSNumber.class]?[NSString stringWithFormat:@"%+.0f ms",[clock[@"offsetMs"] doubleValue]]:@"—";
+        [rows addObject:WDGSheetRow(@"偏差",deviation,YES)];
+    } else {
+        NSString *reason=clock[@"reason"];if(!reason.length)reason=@"无有效样本 · 按本地时间执行";
+        [rows addObject:WDGSheetRow(@"原因",reason,NO)];
+    }
+    WDGSheetController *sheet=[WDGSheetController sheetWithTitle:title rows:rows footnote:@"只读缓存，不联网、不测 RTT、不改系统时间" warning:NO primaryTitle:@"知道了" primaryAction:nil secondaryTitle:@"说明"];
+    sheet.secondaryAction=^{[self explainServerClock];};
+    [self presentSheet:sheet];
 }
 - (void)explainServerClock {
-    [self alert:@"时钟说明" message:@"只读微店缓存样本，不联网。\n不测 RTT，不改系统时钟。\n显示偏差，非毫秒精度。\n只影响下一笔任务。\n确认与执行前会重核对。"];
+    NSArray<NSDictionary *> *rows=@[WDGSheetRow(@"数据来源",@"微店缓存样本（只读）",NO),
+        WDGSheetRow(@"联网",@"不联网、不测 RTT",NO),
+        WDGSheetRow(@"系统时间",@"不修改",NO),
+        WDGSheetRow(@"精度",@"显示偏差，非毫秒精度",NO),
+        WDGSheetRow(@"生效范围",@"仅下一笔任务，确认与执行前重核对",NO)];
+    WDGSheetController *sheet=[WDGSheetController sheetWithTitle:@"时钟说明" rows:rows footnote:nil warning:NO primaryTitle:@"知道了" primaryAction:nil secondaryTitle:nil];
+    [self presentSheet:sheet];
 }
 - (void)validateCartParameters {
     NSDecimalNumber *maximum=[self maximumValue];if(!maximum)return;
@@ -372,23 +503,29 @@ static const CGFloat kWDGCardMaxHeight=480;
     WDGOrderService *s=request?[WDGOrderService preparePreheatRequest:request sampleKey:key payType:nil error:&error]:nil;
     if(![key isEqual:WDGCartSnapshotKey()]){[self alert:@"目标已变化" message:@"请重新选择后校验。 "];return;}
     if(!s||![s configureConcurrentLanes:self.concurrentLanes==2?2:1 error:&error]||![s configureCartDueAt:localDue maximumTotal:maximum error:&error]){[self alert:@"本地校验未通过" message:error.localizedDescription?:@"请核对商品和规格。 "];return;}
-    [self endEditing];[self alert:@"本地参数校验成功" message:[NSString stringWithFormat:@"%@\n\n商品请求、原生服务与金额参数已就绪。未联网，未设置任务，未调用确认或创建订单接口。最终地址、运费及实付仍由服务端确认。",[self clockReview:clock announced:date localDue:localDue]]];
+    [self endEditing];
+    WDGSheetController *sheet=[WDGSheetController sheetWithTitle:@"本地参数校验成功" rows:[self clockReviewRows:clock announced:date localDue:localDue] footnote:@"商品请求、原生服务与金额参数已就绪。未联网，未设置任务，未调用确认或创建订单接口。最终地址、运费及实付仍由服务端确认。只读已有样本，未网络测 RTT；偏差不是精度保证。" warning:NO primaryTitle:@"知道了" primaryAction:nil secondaryTitle:nil];
+    [self presentSheet:sheet];
 }
 - (void)schedule {
     NSDecimalNumber *maximum=[self maximumValue];if(!maximum)return;[self endEditing];
     NSArray *items=[[NSArray alloc] initWithArray:WDGCartSelectedLines() copyItems:YES];NSString *key=[WDGCartSnapshotKey() copy];NSArray *keys=[[items valueForKey:@"lineKey"] sortedArrayUsingSelector:@selector(compare:)];
     if(!items.count||!key.length){[self alert:@"先选好商品" message:@"刷新购物车或点商品卡选择目标。 "];return;}
-    NSDate *date=[self selectedMinute];NSDictionary *clock=nil;NSDate *localDue=[self localDeadlineForDate:date clockSnapshot:&clock];if(!localDue)return;
+    NSDate *date=[self selectedMinute];NSDictionary *clock=nil;
+    if(![self localDeadlineForDate:date clockSnapshot:&clock])return;
     NSUInteger lanes=self.concurrentLanes==2?2:1;
     NSDecimalNumber *total=[maximum decimalNumberByMultiplyingBy:[NSDecimalNumber decimalNumberWithMantissa:lanes exponent:0 isNegative:NO]];
-    NSMutableString *message=[NSMutableString string];for(NSDictionary *item in items)[message appendFormat:@"%@\n%@ × %@\n\n",item[@"title"]?:@"商品",item[@"skuTitle"]?:@"未选规格",item[@"quantity"]?:@"?"];
-    [message appendFormat:@"%@\n\n每单最高实付（含运费）：¥%@\n支付：采用微店确认结果的已选方式\n\n",[self clockReview:clock announced:date localDue:localDue],[self formattedAmount:maximum]];
-    if(lanes==2)[message appendFormat:@"双路竞速：同商品最多2单\n最高总扣款上限：¥%@（每单上限 × 2）\n\n到点发出 2 路真实下单请求，可能重复下单。已发出的请求可能各自成功，首个成功不会撤销另一已发请求。请保持微店前台。",[self formattedAmount:total]];
-    else [message appendFormat:@"单路：最多 1 单\n最高总扣款上限：¥%@\n\n到点将直接创建一次真实订单，不打开支付链接。请保持微店前台。",[self formattedAmount:total]];
-    UIAlertController *a=[UIAlertController alertControllerWithTitle:lanes==2?@"确认双路竞速任务":@"确认这笔任务" message:message preferredStyle:UIAlertControllerStyleAlert];
-    [a addAction:[UIAlertAction actionWithTitle:@"再看看" style:UIAlertActionStyleCancel handler:nil]];
-    [a addAction:[UIAlertAction actionWithTitle:lanes==2?@"确认双路 · 接受最多2单":@"确认单路 · 最多1单" style:UIAlertActionStyleDestructive handler:^(__unused UIAlertAction *v){NSArray *nowKeys=[[WDGCartSelectedLines() valueForKey:@"lineKey"] sortedArrayUsingSelector:@selector(compare:)];if(![key isEqual:WDGCartSnapshotKey()]||![keys isEqual:nowKeys]){[self alert:@"购物车目标已变化" message:@"请重新核对商品和规格。 "];return;}NSError *error=nil;if(![WDGCore.shared armCartAt:date maximumTotal:maximum concurrentLanes:lanes clockSnapshot:clock error:&error])[self alert:@"任务未设置" message:error.localizedDescription];}]];
-    [self.window.rootViewController presentViewController:a animated:YES completion:nil];
+    NSDictionary *first=items.firstObject;
+    NSMutableDictionary *productRow=[WDGSheetRow(@"商品",[NSString stringWithFormat:@"%@ · %@ × %@%@",first[@"title"]?:@"商品",first[@"skuTitle"]?:@"未选规格",first[@"quantity"]?:@"?",items.count>1?[NSString stringWithFormat:@" · 共 %lu 条",(unsigned long)items.count]:@""],NO) mutableCopy];
+    productRow[@"middle"]=@YES;
+    NSString *footnote=lanes==2?[NSString stringWithFormat:@"可能重复下单：同商品最多 2 单，总扣款上限 ¥%@。首个成功不会撤销另一已发请求",[self formattedAmount:total]]:@"到点创建 1 次真实订单，不打开支付链接";
+    WDGSheetController *sheet=[WDGSheetController sheetWithTitle:lanes==2?@"确认双路竞速任务":@"确认这笔任务"
+        rows:@[productRow,WDGSheetRow(@"开抢",self.timeValue.text?:@"",NO),WDGSheetRow(@"最高实付",[NSString stringWithFormat:@"¥%@",[self formattedAmount:maximum]],YES),WDGSheetRow(@"并发",lanes==2?@"最多 2 单":@"最多 1 单",NO),WDGSheetRow(@"时钟",[self clockSummary:clock],NO)]
+        footnote:footnote warning:lanes==2
+        primaryTitle:lanes==2?@"确认双路 · 接受最多2单":@"确认单路 · 最多1单"
+        primaryAction:^{NSArray *nowKeys=[[WDGCartSelectedLines() valueForKey:@"lineKey"] sortedArrayUsingSelector:@selector(compare:)];if(![key isEqual:WDGCartSnapshotKey()]||![keys isEqual:nowKeys]){[self alert:@"购物车目标已变化" message:@"请重新核对商品和规格。 "];return;}NSError *error=nil;if(![WDGCore.shared armCartAt:date maximumTotal:maximum concurrentLanes:lanes clockSnapshot:clock error:&error])[self alert:@"任务未设置" message:error.localizedDescription];}
+        secondaryTitle:@"再看看"];
+    [self presentSheet:sheet];
 }
 - (void)cancel {[WDGCore.shared cancelTask:@"用户取消任务"];}
 - (void)localTest {NSError *error=nil;if(![WDGCore.shared armAt:[NSDate dateWithTimeIntervalSinceNow:5] action:@"dryRun" payType:nil error:&error])[self alert:@"演练未开始" message:error.localizedDescription];}

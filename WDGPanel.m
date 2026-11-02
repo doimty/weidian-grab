@@ -241,6 +241,12 @@ static const CGFloat kWDGMenuCancelGap=8;
 @end
 @implementation WDGSwitch
 - (void)fireToggle { if(self.onToggle) self.onToggle(self.isOn); }
+- (void)layoutSubviews {
+    [super layoutSubviews];
+    self.tintAdjustmentMode=UIViewTintAdjustmentModeNormal;
+    UIColor *accent=[UIColor colorWithRed:0.90 green:0.14 blue:0.30 alpha:1.0];
+    if(![self.onTintColor isEqual:accent]) self.onTintColor=accent;
+}
 @end
 
 @interface WDGMenuItem : NSObject
@@ -880,7 +886,7 @@ static const CGFloat kWDGMenuCancelGap=8;
     NSMutableArray<WDGMenuItem *> *items=[NSMutableArray array];
     NSString *lanesValue=self.concurrentLanes>1?[NSString stringWithFormat:@"%lu 路",(unsigned long)self.concurrentLanes]:@"单路";
     WDGMenuItem *lanes=[WDGMenuItem itemWithTitle:[NSString stringWithFormat:@"并发 · %@",lanesValue] checked:NO destructive:NO action:^{[self chooseConcurrentLanes];}];
-    lanes.enabled=self.primaryButton.enabled;[items addObject:lanes];
+    lanes.enabled=self.primaryButton.enabled;lanes.showsChevron=YES;[items addObject:lanes];
     BOOL retryOn=[WDGCore.shared.status[@"retryEnabled"] boolValue];
     [items addObject:[WDGMenuItem switchItemWithTitle:@"循环重发（最多 3 次）" on:retryOn handler:^(BOOL on){[WDGCore.shared setRetryEnabled:on attempts:3];[self refresh];}]];
     BOOL adsOn=[WDGCore.shared.status[@"ads"][@"enabled"] boolValue];

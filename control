@@ -1,6 +1,6 @@
 Package: com.koudai.weidian.grab
 Name: WeidianGrab
-Version: 0.9.13
+Version: 0.9.14
 Architecture: iphoneos-arm64
 Description: 微店 7.9.62 购物车预热直提：悬浮面板配置、到点确认后直接调用 CreateOrder 接口
 Maintainer: doimty

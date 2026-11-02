@@ -21,6 +21,10 @@ FOUNDATION_EXPORT NSString * const WDGBuildID;
 - (void)recordEvent:(NSString *)event details:(NSDictionary *)details;
 - (void)acceptSnapshot:(NSDictionary *)snapshot;
 - (void)clearSnapshot;
+// action: reminder / dryRun / serviceOnce / preheatOnce / detailOnce.
+// detailOnce arms from the visible product detail page (WDBGoodsDetailController):
+// at the due time it invokes that page's own 立即购买 and submits only the
+// confirmation page the app produces afterwards.
 - (BOOL)armAt:(NSDate *)date action:(NSString *)action payType:(NSNumber * _Nullable)payType error:(NSError **)error;
 - (BOOL)armCartAt:(NSDate *)date maximumTotal:(NSDecimalNumber *)maximumTotal error:(NSError **)error;
 // lanes: 1 keeps the tested single submission; 2 races two independent
@@ -45,5 +49,9 @@ FOUNDATION_EXPORT NSDictionary *WDGObserverDiagnostics(void);
 @class WDGOrderService;
 FOUNDATION_EXPORT BOOL WDGInterfaceTargetReady(NSString * _Nullable sampleKey, NSNumber * _Nullable payType, NSString * _Nullable * _Nullable reason);
 FOUNDATION_EXPORT WDGOrderService * _Nullable WDGPrepareObservedInterface(NSString *sampleKey, NSNumber *payType, NSError * _Nullable * _Nullable error);
+// Read-only introspection shared by the panel and the detailOnce arm path: the
+// currently visible WDBGoodsDetailController instance, or nil with an optional
+// reason. Never invokes a page action and never touches stored state.
+FOUNDATION_EXPORT id _Nullable WDGVisibleDetailController(NSString * _Nullable * _Nullable reason);
 FOUNDATION_EXPORT void WDGShowOverlay(void);
 NS_ASSUME_NONNULL_END

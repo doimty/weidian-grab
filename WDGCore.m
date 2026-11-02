@@ -10,9 +10,10 @@
 #import <errno.h>
 #import <objc/runtime.h>
 #import <objc/message.h>
+#import <string.h>
 
 NSString * const WDGStateDidChange = @"WDGStateDidChange";
-NSString * const WDGVersion = @"0.9.16";
+NSString * const WDGVersion = @"0.9.17";
 #ifndef WDG_BUILD_ID
 #define WDG_BUILD_ID "local-unbuilt"
 #endif
@@ -52,6 +53,128 @@ static NSDictionary *WDGCachedClockStatus(NSDictionary *sample) {
     return [result copy];
 }
 
+// Detail-page direct purchase. Everything below is read-only introspection of
+// the app's own controller: it never sends a request, and the only action the
+// task ever performs is the page's own handlePurchaseOperation.
+static const char *WDGDetailUnqualifiedType(const char *type) {
+    if(!type)return "";
+    while(*type&&strchr("rnNoORVA",*type))++type;
+    return type;
+}
+static BOOL WDGDetailExactType(const char *encoded,char expected) {
+    const char *type=WDGDetailUnqualifiedType(encoded);
+    return type[0]==expected&&type[1]=='\0';
+}
+static BOOL WDGDetailObjectType(const char *encoded) {
+    const char *type=WDGDetailUnqualifiedType(encoded);
+    return type[0]=='@'&&(type[1]=='\0'||type[1]=='"');
+}
+static Method WDGDetailInstanceMethod(id receiver,SEL selector,unsigned int count) {
+    if(!receiver||object_isClass(receiver))return NULL;
+    Method method=class_getInstanceMethod(object_getClass(receiver),selector);
+    if(!method||method_getNumberOfArguments(method)!=count)return NULL;
+    return method;
+}
+static BOOL WDGDetailMethodReturns(Method method,char type) {
+    if(!method)return NO;
+    char result[256]={0};
+    method_getReturnType(method,result,sizeof(result));
+    return WDGDetailExactType(result,type);
+}
+static BOOL WDGDetailMethodArgument(Method method,unsigned int index,char type) {
+    if(!method||index>=method_getNumberOfArguments(method))return NO;
+    char argument[256]={0};
+    method_getArgumentType(method,index,argument,sizeof(argument));
+    return type=='@'?WDGDetailObjectType(argument):WDGDetailExactType(argument,type);
+}
+static BOOL WDGDetailIsPage(id value) {
+    Class cls=NSClassFromString(@"WDBGoodsDetailController");
+    if(!cls||!value||object_isClass(value))return NO;
+    @try{return [value isKindOfClass:cls];}
+    @catch(__unused NSException *exception){return NO;}
+}
+// UIApplication.windows is deprecated for iOS 15+ and rejected by -Werror, so
+// union every connected scene's windows: the same application-owned window set.
+static NSArray<UIWindow *> *WDGDetailWindows(void) {
+    NSMutableArray<UIWindow *> *windows=[NSMutableArray array];
+    for(UIScene *scene in UIApplication.sharedApplication.connectedScenes) {
+        if(![scene isKindOfClass:UIWindowScene.class])continue;
+        for(UIWindow *window in ((UIWindowScene *)scene).windows)
+            if(window&&![windows containsObject:window])[windows addObject:window];
+    }
+    return windows;
+}
+static BOOL WDGDetailPageVisible(id page) {
+    if(!WDGDetailIsPage(page))return NO;
+    UIViewController *controller=page;
+    UIView *view=controller.viewIfLoaded;
+    if(!view||!view.window||view.window.hidden||view.window.alpha<=0.01)return NO;
+    if(view.window.windowScene&&view.window.windowScene.activationState!=UISceneActivationStateForegroundActive)return NO;
+    if(controller.isBeingDismissed||controller.isMovingFromParentViewController)return NO;
+    return YES;
+}
+static id WDGDetailFind(UIViewController *controller,NSUInteger depth) {
+    if(!controller||depth>6)return nil;
+    if(WDGDetailPageVisible(controller))return controller;
+    UIViewController *presented=controller.presentedViewController;
+    if(presented&&!presented.isBeingDismissed){id found=WDGDetailFind(presented,depth+1);if(found)return found;}
+    for(UIViewController *child in controller.childViewControllers){id found=WDGDetailFind(child,depth+1);if(found)return found;}
+    return nil;
+}
+static id WDGDetailController(NSString **reason) {
+    if(UIApplication.sharedApplication.applicationState!=UIApplicationStateActive){if(reason)*reason=@"请保持微店在前台";return nil;}
+    if(!NSClassFromString(@"WDBGoodsDetailController")){if(reason)*reason=@"当前版本未提供商品详情页控制器";return nil;}
+    for(UIWindow *window in WDGDetailWindows()) {
+        if(!window||window.hidden||window.alpha<=0.01)continue;
+        id found=WDGDetailFind(window.rootViewController,0);
+        if(found){if(reason)*reason=nil;return found;}
+    }
+    if(reason)*reason=@"请先打开商品详情页";
+    return nil;
+}
+static NSString *WDGDetailItemID(id controller,NSString **reason) {
+    SEL selector=NSSelectorFromString(@"itemId");
+    Method method=WDGDetailInstanceMethod(controller,selector,2);
+    if(!method||!WDGDetailMethodReturns(method,'@')||!WDGDetailMethodArgument(method,1,':')){
+        if(reason)*reason=@"详情页 itemId 读取 ABI 不匹配，未设置任务";return nil;
+    }
+    id value=nil;
+    @try{value=((id(*)(id,SEL))objc_msgSend)(controller,selector);}
+    @catch(__unused NSException *exception){if(reason)*reason=@"详情页 itemId 读取异常，未设置任务";return nil;}
+    if(![value isKindOfClass:NSString.class]||![(NSString *)value length]){if(reason)*reason=@"详情页商品信息尚未加载完成，请稍后重试";return nil;}
+    return [(NSString *)value copy];
+}
+// Both the arm-time check and the fire-time check use this exact ABI gate:
+// handlePurchaseOperation must be void(id,SEL) on the instance.
+static BOOL WDGDetailPurchaseReady(id controller) {
+    Method method=WDGDetailInstanceMethod(controller,NSSelectorFromString(@"handlePurchaseOperation"),2);
+    return method&&WDGDetailMethodReturns(method,'v')&&WDGDetailMethodArgument(method,0,'@')&&WDGDetailMethodArgument(method,1,':');
+}
+static id WDGDetailTarget(NSString **itemIDOut,NSString **reason) {
+    NSString *why=nil;
+    id controller=WDGDetailController(&why);
+    if(!controller){if(reason)*reason=why?:@"请先打开商品详情页";return nil;}
+    NSString *itemID=WDGDetailItemID(controller,&why);
+    if(!itemID){if(reason)*reason=why?:@"详情页商品信息尚未加载完成";return nil;}
+    if(!WDGDetailPurchaseReady(controller)){if(reason)*reason=@"立即购买方法 ABI 不是 void(id,SEL)，未设置任务";return nil;}
+    if(itemIDOut)*itemIDOut=itemID;
+    if(reason)*reason=nil;
+    return controller;
+}
+id WDGVisibleDetailController(NSString **reason) {
+    if(!NSThread.isMainThread){
+        __block id found=nil;__block NSString *why=nil;
+        dispatch_sync(dispatch_get_main_queue(),^{found=WDGVisibleDetailController(&why);});
+        if(reason)*reason=why;
+        return found;
+    }
+    id found=nil;NSString *why=nil;
+    @try{found=WDGDetailController(&why);}
+    @catch(__unused NSException *exception){why=@"读取详情页状态异常";}
+    if(reason)*reason=found?nil:(why?:@"请先打开商品详情页");
+    return found;
+}
+
 @interface WDGCore ()
 @property (nonatomic) BOOL captureEnabled;
 @property (nonatomic, copy) NSDictionary *snapshot;
@@ -72,6 +195,12 @@ static NSDictionary *WDGCachedClockStatus(NSDictionary *sample) {
 @property (nonatomic,copy) NSDictionary *cartClockSnapshot;
 @property (nonatomic,strong) NSDate *cartLocalDue;
 @property (nonatomic) BOOL cancellingTask;
+// detailOnce only. The controller is held weakly and is never persisted: a
+// restarted process must not resume a page-bound task.
+@property (nonatomic,weak) id detailController;
+@property (nonatomic,strong) NSTimer *detailPoll;
+@property (nonatomic) NSUInteger detailPollAttempts;
+@property (nonatomic) NSTimeInterval detailFiredAt;
 @end
 
 @implementation WDGCore {
@@ -250,14 +379,23 @@ static NSDictionary *WDGCachedClockStatus(NSDictionary *sample) {
     NSTimeInterval delta=date.timeIntervalSince1970-validationNow;
     if(self.cancellingTask||[@[@"sending",@"unknown"] containsObject:self.task[@"state"]]){if(error)*error=WGDError(3,@"上一笔接口请求仍需核对结果，请勿覆盖");return NO;}
     BOOL cartTask=[action isEqual:@"preheatOnce"];
+    BOOL detailTask=[action isEqual:@"detailOnce"];
+    id detailTarget=nil;NSString *detailItemID=nil;
     NSDate *localDue=cartTask?(self.cartLocalDue?:date):date;
     NSTimeInterval localDelta=localDue.timeIntervalSince1970-validationNow;
     NSDecimalNumber *maximum=self.cartMaximum;
     NSString *sampleKey=[(cartTask?WDGCartSnapshotKey():self.snapshot[@"sampleKey"]) copy];
     NSString *reason=nil;
-    if(![@[@"reminder",@"dryRun",@"serviceOnce",@"preheatOnce"] containsObject:action])reason=@"未知任务类型";
+    if(![@[@"reminder",@"dryRun",@"serviceOnce",@"preheatOnce",@"detailOnce"] containsObject:action])reason=@"未知任务类型";
     else if(!isfinite(delta)||delta<2||delta>86400)reason=@"任务时间请设在 2 秒至 24 小时以内";
     else if(UIApplication.sharedApplication.applicationState!=UIApplicationStateActive)reason=@"请保持微店在前台；后台或锁屏期间不保证执行";
+    else if(detailTask){
+        // Same gates as the fire path: visible detail page, readable itemId and
+        // an exact void(id,SEL) purchase method. Nothing is stored on disk.
+        NSString *detailReason=nil;
+        detailTarget=WDGDetailTarget(&detailItemID,&detailReason);
+        if(!detailTarget)reason=detailReason?:@"请先打开商品详情页";
+    }
     else if([action isEqual:@"serviceOnce"]){
         NSArray *items=self.snapshot[@"items"];
         NSString *price=self.snapshot[@"totalPrice"];
@@ -276,6 +414,7 @@ static NSDictionary *WDGCachedClockStatus(NSDictionary *sample) {
             if(![WDGOrderService preheatReady:&preheatReason])reason=preheatReason?:@"预热接口未就绪";
         }
     }
+    if(detailTask && delta>590)reason=@"详情页直提只支持十分钟以内，请把任务设在十分钟以内";
     if([action isEqual:@"serviceOnce"] && delta>590)reason=@"接口参数本轮只验证十分钟有效期，请把任务设在十分钟以内";
     if(cartTask&&(!isfinite(delta)||delta<2||delta>43200||!isfinite(localDelta)||localDelta<2||localDelta>43200))
         reason=@"公告时刻与本地执行时刻都须在未来 2 秒至 12 小时内，请重新确认时差和时间";
@@ -297,6 +436,12 @@ static NSDictionary *WDGCachedClockStatus(NSDictionary *sample) {
     [self cancelTask:@"新任务替代旧任务"];
     if([@[@"sending",@"unknown"] containsObject:self.task[@"state"]]){if(error)*error=WGDError(3,@"旧任务的创建请求已经发出，请先核对结果");return NO;}
     if((cartTask&&![sampleKey isEqual:WDGCartSnapshotKey()])||([action isEqual:@"serviceOnce"]&&![sampleKey isEqual:self.snapshot[@"sampleKey"]])){if(error)*error=WGDError(21,@"准备期间目标已变化，请重新确认");return NO;}
+    if(detailTask){
+        NSString *nowItemID=nil,*nowReason=nil;
+        id nowTarget=WDGDetailTarget(&nowItemID,&nowReason);
+        if(!nowTarget||![nowItemID isEqualToString:detailItemID]){if(error)*error=WGDError(21,nowReason?:@"详情页商品已变化，请重新确认");return NO;}
+        detailTarget=nowTarget;detailItemID=nowItemID;
+    }
     NSTimeInterval armedAt=NSDate.date.timeIntervalSince1970,armedUptime=NSProcessInfo.processInfo.systemUptime;
     NSTimeInterval dueTS=localDue.timeIntervalSince1970;
     if(cartTask&&(date.timeIntervalSince1970-armedAt<2||date.timeIntervalSince1970-armedAt>43200||dueTS-armedAt<2||dueTS-armedAt>43200)){
@@ -305,6 +450,11 @@ static NSDictionary *WDGCachedClockStatus(NSDictionary *sample) {
     self.preparedService=prepared;self.lastReceipt=nil;
     NSTimeInterval fireAt=cartTask?dueTS-5:dueTS;
     self.task=[@{@"id":NSUUID.UUID.UUIDString,@"state":@"armed",@"action":action,@"sampleKey":sampleKey?:@"",@"payType":cartTask?NSNull.null:(payType?:NSNull.null),@"announcedDueAt":@(date.timeIntervalSince1970),@"dueAt":@(dueTS),@"fireAt":@(fireAt),@"armedAt":@(armedAt),@"armedUptime":@(armedUptime)} mutableCopy];
+    // The controller stays memory-only (weak) and the item id is the only
+    // detail-page fact written to task metadata.
+    self.detailController=detailTask?detailTarget:nil;
+    self.detailPollAttempts=0;self.detailFiredAt=0;
+    if(detailTask)self.task[@"detailItemId"]=detailItemID?:@"";
     if(cartTask){
         NSDictionary *clock=self.cartClockSnapshot?:WDGCachedClockStatus(nil);BOOL native=WDGNativeClockMode(clock);
         self.task[@"warmupAt"]=@(fireAt);
@@ -374,6 +524,7 @@ static NSDictionary *WDGCachedClockStatus(NSDictionary *sample) {
     self.task[@"state"]=@"firing";
     [self recordEvent:@"timer_fired" details:@{@"action":action,@"taskId":firedTaskID,@"latenessMs":@(late*1000)}];
     if(![self.task[@"id"] isEqual:firedTaskID]||![self.task[@"state"] isEqual:@"firing"])return;
+    if([action isEqual:@"detailOnce"]){[self fireDetailPurchase];return;}
     if(WDGActionIsInterface(action.UTF8String)){
         NSError *error=nil;NSString *taskID=[self.task[@"id"] copy];
         self.task[@"state"]=[action isEqual:@"preheatOnce"]?@"preheating":@"sending";
@@ -397,12 +548,120 @@ static NSDictionary *WDGCachedClockStatus(NSDictionary *sample) {
         WDGShowOverlay();
     }
 }
+// detailOnce fire path. The page's own 立即购买 is the only action taken here;
+// the resulting confirmation page is the only thing ever submitted, and only
+// after the adapter publishes a sample newer than this trigger.
+- (void)fireDetailPurchase {
+    if(!NSThread.isMainThread){dispatch_async(dispatch_get_main_queue(), ^{[self fireDetailPurchase];});return;}
+    if(![self.task[@"action"] isEqual:@"detailOnce"]||![self.task[@"state"] isEqual:@"firing"])return;
+    NSString *taskID=[self.task[@"id"] copy];
+    NSString *expected=[self.task[@"detailItemId"] isKindOfClass:NSString.class]?self.task[@"detailItemId"]:@"";
+    id controller=self.detailController;
+    NSString *reason=nil;
+    if(!controller)reason=@"详情页实例已释放，未提交";
+    else if(!WDGDetailIsPage(controller))reason=@"详情页对象已失效，未提交";
+    else {
+        SEL selector=NSSelectorFromString(@"itemId");
+        Method method=WDGDetailInstanceMethod(controller,selector,2);
+        if(!method||!WDGDetailMethodReturns(method,'@')||!WDGDetailMethodArgument(method,1,':'))reason=@"详情页 itemId 读取 ABI 不匹配，未提交";
+        else {
+            id value=nil;
+            @try{value=((id(*)(id,SEL))objc_msgSend)(controller,selector);}
+            @catch(__unused NSException *exception){reason=@"详情页 itemId 读取异常，未提交";}
+            if(!reason){
+                if(![value isKindOfClass:NSString.class]||![(NSString *)value length])reason=@"详情页 itemId 为空，未提交";
+                else if(expected.length&&![(NSString *)value isEqualToString:expected])reason=@"详情页商品已变化，未提交";
+            }
+        }
+    }
+    if(!reason&&!WDGDetailPurchaseReady(controller))reason=@"立即购买方法 ABI 不是 void(id,SEL)，未提交";
+    if(reason){
+        self.task[@"state"]=@"failed";
+        self.task[@"reason"]=reason;
+        self.preparedService=nil;self.detailController=nil;
+        [self recordEvent:@"detail_not_fired" details:@{@"taskId":taskID?:@"",@"reason":reason}];
+        return;
+    }
+    self.task[@"state"]=@"preheating";
+    self.task[@"reason"]=@"已触发立即购买，等待确认订单数据";
+    self.detailPollAttempts=0;self.detailFiredAt=NSDate.date.timeIntervalSince1970;
+    [self recordEvent:@"detail_purchase" details:@{@"taskId":taskID?:@""}];
+    @try{((void(*)(id,SEL))objc_msgSend)(controller,NSSelectorFromString(@"handlePurchaseOperation"));}
+    @catch(__unused NSException *exception){
+        self.task[@"state"]=@"failed";
+        self.task[@"reason"]=@"立即购买调用异常，未提交";
+        [self recordEvent:@"detail_not_fired" details:@{@"taskId":taskID?:@"",@"reason":self.task[@"reason"]}];
+        return;
+    }
+    if(![self.task[@"id"] isEqual:taskID]||![self.task[@"state"] isEqual:@"preheating"])return;
+    self.detailPoll=[NSTimer timerWithTimeInterval:0.05 target:self selector:@selector(detailPollTick:) userInfo:taskID repeats:YES];
+    [NSRunLoop.mainRunLoop addTimer:self.detailPoll forMode:NSRunLoopCommonModes];
+}
+// 40 probes at 0.05s (about two seconds). A sample is usable only when it is a
+// new confirmation page published after the purchase trigger and carries
+// exactly one payment option; anything else ends the task without submitting.
+- (void)detailPollTick:(NSTimer *)timer {
+    if(timer!=self.detailPoll){[timer invalidate];return;}
+    if(![self.task[@"action"] isEqual:@"detailOnce"]||![self.task[@"state"] isEqual:@"preheating"]){[timer invalidate];self.detailPoll=nil;return;}
+    if(UIApplication.sharedApplication.applicationState!=UIApplicationStateActive){[timer invalidate];self.detailPoll=nil;[self cancelTask:@"微店离开前台，任务已取消"];return;}
+    NSDictionary *snapshot=self.snapshot?:@{};
+    NSString *sampleKey=[snapshot[@"sampleKey"] isKindOfClass:NSString.class]?snapshot[@"sampleKey"]:nil;
+    NSString *baseline=[self.task[@"sampleKey"] isKindOfClass:NSString.class]?self.task[@"sampleKey"]:@"";
+    NSNumber *capturedAt=[snapshot[@"capturedAt"] isKindOfClass:NSNumber.class]?snapshot[@"capturedAt"]:nil;
+    // No publish timestamp means the sample cannot be proven newer than the
+    // purchase trigger, so it is never submitted.
+    BOOL fresh=capturedAt&&[capturedAt doubleValue]>=self.detailFiredAt;
+    if(sampleKey.length&&![sampleKey isEqualToString:baseline]&&[snapshot[@"stage"] isEqual:@"confirmed"]&&fresh){
+        NSArray *options=[snapshot[@"payOptions"] isKindOfClass:NSArray.class]?snapshot[@"payOptions"]:@[];
+        NSNumber *payType=options.count==1&&[options.firstObject isKindOfClass:NSDictionary.class]?((NSDictionary *)options.firstObject)[@"type"]:nil;
+        [timer invalidate];self.detailPoll=nil;
+        if(options.count>1){[self failDetailTask:[NSString stringWithFormat:@"未拿到确认页数据，未提交：确认页有 %lu 个可用支付按钮，无法唯一确定",(unsigned long)options.count]];return;}
+        if(![payType isKindOfClass:NSNumber.class]){[self failDetailTask:@"未拿到确认页数据，未提交：确认页未给出唯一支付参数"];return;}
+        [self submitDetailSample:sampleKey payType:payType];
+        return;
+    }
+    if(++self.detailPollAttempts>=40){[timer invalidate];self.detailPoll=nil;[self failDetailTask:@"未拿到确认页数据，未提交"];}
+}
+- (void)failDetailTask:(NSString *)reason {
+    if(![self.task[@"action"] isEqual:@"detailOnce"])return;
+    if(![@[@"firing",@"preheating"] containsObject:self.task[@"state"]])return;
+    self.task[@"state"]=@"failed";
+    self.task[@"reason"]=reason?:@"未拿到确认页数据，未提交";
+    self.preparedService=nil;self.detailController=nil;
+    [self recordEvent:@"detail_failed" details:@{@"taskId":[self.task[@"id"] copy],@"reason":self.task[@"reason"]}];
+}
+// The fresh sample is bound exactly like serviceOnce: prepare observed
+// interface, then submitTask. A rejected arm or a rejected submit ends the task.
+- (void)submitDetailSample:(NSString *)sampleKey payType:(NSNumber *)payType {
+    NSString *taskID=[self.task[@"id"] copy];
+    if(![self.task[@"action"] isEqual:@"detailOnce"]||![self.task[@"state"] isEqual:@"preheating"])return;
+    NSError *error=nil;
+    WDGOrderService *service=WDGPrepareObservedInterface(sampleKey,payType,&error);
+    if(!service){[self failDetailTask:error.localizedDescription?:@"确认页参数未就绪，未提交"];return;}
+    self.preparedService=service;self.lastReceipt=nil;
+    self.task[@"state"]=@"sending";
+    self.task[@"reason"]=@"已触发立即购买，正在提交创建订单";
+    [self recordEvent:@"detail_submit" details:@{@"taskId":taskID?:@""}];
+    __weak WDGCore *weakSelf=self;
+    BOOL sent=[service submitTask:taskID completion:^(NSDictionary *receipt){[weakSelf completeReply:receipt taskID:taskID];} error:&error];
+    if(![self.task[@"id"] isEqual:taskID])return;
+    if(!sent&&[@[@"preheating",@"waitingSale",@"sending"] containsObject:self.task[@"state"]]){
+        self.task[@"state"]=@"failed";
+        self.task[@"reason"]=error.localizedDescription?:@"参数验证未通过，未发出请求";
+        self.preparedService=nil;
+        [self recordEvent:@"detail_not_sent" details:@{@"taskId":taskID?:@"",@"reason":self.task[@"reason"]}];
+    } else if(sent&&[@[@"preheating",@"waitingSale",@"sending"] containsObject:self.task[@"state"]]){
+        self.replyTimeout=[NSTimer timerWithTimeInterval:35 target:self selector:@selector(replyTimedOut:) userInfo:taskID repeats:NO];
+        [NSRunLoop.mainRunLoop addTimer:self.replyTimeout forMode:NSRunLoopCommonModes];
+    }
+}
 - (void)cancelTask:(NSString *)reason {
     if(!NSThread.isMainThread){dispatch_async(dispatch_get_main_queue(), ^{[self cancelTask:reason];});return;}
     if(self.cancellingTask)return;
     self.cancellingTask=YES;
     WDGTaskGateCancel(&_taskGate);
     [self.timer invalidate];self.timer=nil;
+    [self.detailPoll invalidate];self.detailPoll=nil;
     NSString *taskID=[self.task[@"id"] copy];
     WDGOrderService *service=self.preparedService;
     BOOL stopped=service?[service cancelBeforeCreate]:![@[@"sending",@"unknown"] containsObject:self.task[@"state"]];

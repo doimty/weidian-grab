@@ -307,6 +307,7 @@ static const CGFloat kWDGMenuCancelGap=8;
 - (void)presentMenuWithTitle:(NSString *)title subtitle:(NSString *)subtitle items:(NSArray<WDGMenuItem *> *)items;
 - (void)dismissOverlayWithAction:(WDGSheetBlock)action;
 - (void)removeOverlayImmediately;
+- (void)scheduleDetailOnce;
 @end
 @implementation WDGPanel
 + (instancetype)shared {static WDGPanel *p;static dispatch_once_t once;dispatch_once(&once,^{p=[self new];});return p;}
@@ -583,8 +584,11 @@ static const CGFloat kWDGMenuCancelGap=8;
 - (void)refresh {
     if(!self.card)return;
     NSArray *items=WDGCartSelectedLines();NSDictionary *state=WDGCore.shared.status,*task=state[@"task"];NSString *phase=task[@"state"];
+    NSString *taskAction=[task[@"action"] isKindOfClass:NSString.class]?task[@"action"]:@"";
+    BOOL detailTask=[taskAction isEqualToString:@"detailOnce"]&&[@[@"armed",@"firing",@"preheating",@"sending",@"waitingSale"] containsObject:phase];
     NSString *source=[WDGCartDiagnostics()[@"selectionSource"] isEqual:@"assistant_explicit"]?@"手动指定":@"购物车勾选";
-    if(items.count){NSDictionary *first=items.firstObject;self.productLabel.text=first[@"title"]?:@"购物车商品";self.detailLabel.text=[NSString stringWithFormat:@"%@ · %@ × %@%@",source,first[@"skuTitle"]?:@"未选规格",first[@"quantity"]?:@"?",items.count>1?[NSString stringWithFormat:@" · 共 %lu 条",(unsigned long)items.count]:@""];}
+    if(detailTask){self.productLabel.text=@"详情页直提";self.detailLabel.text=@"到点先点立即购买，再用新确认页提交";}
+    else if(items.count){NSDictionary *first=items.firstObject;self.productLabel.text=first[@"title"]?:@"购物车商品";self.detailLabel.text=[NSString stringWithFormat:@"%@ · %@ × %@%@",source,first[@"skuTitle"]?:@"未选规格",first[@"quantity"]?:@"?",items.count>1?[NSString stringWithFormat:@" · 共 %lu 条",(unsigned long)items.count]:@""];}
     else {self.productLabel.text=@"选择要抢的商品";self.detailLabel.text=@"跟随购物车勾选 · 点此手动指定";}
     BOOL active=[@[@"armed",@"firing",@"preheating",@"waitingSale",@"sending"] containsObject:phase],unknown=[phase isEqual:@"unknown"];
     if([@[@"armed",@"waitingSale"] containsObject:phase]){NSTimeInterval s=MAX(0,[task[@"dueAt"] doubleValue]-NSDate.date.timeIntervalSince1970);self.statusLabel.text=[NSString stringWithFormat:@"距离开抢 %02ld:%02ld:%02ld · 保持前台",(long)(s/3600),(long)((NSInteger)s/60%60),(long)((NSInteger)s%60)];}
@@ -881,6 +885,25 @@ static const CGFloat kWDGMenuCancelGap=8;
         secondaryTitle:@"再看看"];
     [self presentSheet:sheet];
 }
+// 详情页直提：复用同一套时间选择与确认 sheet，但确认后只 arm detailOnce；
+// 到点由 WDGCore 先点页面自己的「立即购买」，再提交新出现的确认页。
+- (void)scheduleDetailOnce {
+    [self endEditing];
+    NSString *detailReason=nil;
+    if(!WDGVisibleDetailController(&detailReason)){[self alert:@"先打开商品详情页" message:detailReason?:@"详情页直提需要当前可见的商品详情页。 "];return;}
+    NSDate *date=[self selectedMinute];NSDictionary *clock=nil;
+    if(![self localDeadlineForDate:date clockSnapshot:&clock])return;
+    NSTimeInterval delta=date.timeIntervalSince1970-NSDate.date.timeIntervalSince1970;
+    if(!isfinite(delta)||delta<2||delta>590){[self alert:@"请重新选择开抢时间" message:@"详情页直提与接口参数一致，只支持未来 2 秒至 10 分钟。 "];return;}
+    WDGSheetController *sheet=[WDGSheetController sheetWithTitle:@"确认详情页直提"
+        rows:@[WDGSheetRow(@"商品",@"当前打开的商品详情页",NO),WDGSheetRow(@"方式",@"详情页直提（到点自动点立即购买）",NO),WDGSheetRow(@"开抢",self.timeValue.text?:@"",NO),WDGSheetRow(@"时钟",[self clockSummary:clock],NO)]
+        footnote:@"到点会先触发立即购买、再自动提交；比购物车模式多一次跳转，可能失败"
+        warning:YES
+        primaryTitle:@"确认详情页直提"
+        primaryAction:^{NSString *reason=nil;if(!WDGVisibleDetailController(&reason)){[self alert:@"详情页已关闭" message:reason?:@"请回到商品详情页再试。 "];return;}NSError *error=nil;if(![WDGCore.shared armAt:date action:@"detailOnce" payType:nil error:&error])[self alert:@"任务未设置" message:error.localizedDescription];}
+        secondaryTitle:@"再看看"];
+    [self presentSheet:sheet];
+}
 - (void)cancel {[WDGCore.shared cancelTask:@"用户取消任务"];}
 - (void)export {
     NSError *error=nil;NSString *file=[WDGCore.shared exportReport:&error];if(!file){[self alert:@"导出失败" message:error.localizedDescription?:@"请稍后重试"];return;}
@@ -902,11 +925,15 @@ static const CGFloat kWDGMenuCancelGap=8;
     NSString *lanesValue=self.concurrentLanes>1?[NSString stringWithFormat:@"%lu 路",(unsigned long)self.concurrentLanes]:@"单路";
     WDGMenuItem *lanes=[WDGMenuItem itemWithTitle:[NSString stringWithFormat:@"并发 · %@",lanesValue] checked:NO destructive:NO action:^{[self chooseConcurrentLanes];}];
     lanes.enabled=self.primaryButton.enabled;lanes.showsChevron=YES;[items addObject:lanes];
+    NSString *detailReason=nil;
+    BOOL detailReady=WDGVisibleDetailController(&detailReason)!=nil;
+    WDGMenuItem *detail=[WDGMenuItem itemWithTitle:@"详情页直提" checked:NO destructive:NO action:^{[self scheduleDetailOnce];}];
+    detail.enabled=detailReady&&self.primaryButton.enabled;[items addObject:detail];
     BOOL retryOn=[WDGCore.shared.status[@"retryEnabled"] boolValue];
     [items addObject:[WDGMenuItem switchItemWithTitle:@"循环重发（最多 3 次）" on:retryOn handler:^(BOOL on){[WDGCore.shared setRetryEnabled:on attempts:3];[self refresh];}]];
     BOOL adsOn=[WDGCore.shared.status[@"ads"][@"enabled"] boolValue];
     [items addObject:[WDGMenuItem switchItemWithTitle:@"去广告" on:adsOn handler:^(BOOL on){[WDGCore.shared setAdsEnabled:on];}]];
-    [self presentMenuWithTitle:@"更多" subtitle:nil items:items];
+    [self presentMenuWithTitle:@"更多" subtitle:detailReady?nil:(detailReason?:@"详情页直提只在商品详情页可用") items:items];
 }
 @end
 void WDGShowOverlay(void) {

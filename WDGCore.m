@@ -12,7 +12,7 @@
 #import <objc/message.h>
 
 NSString * const WDGStateDidChange = @"WDGStateDidChange";
-NSString * const WDGVersion = @"0.9.7";
+NSString * const WDGVersion = @"0.9.8";
 #ifndef WDG_BUILD_ID
 #define WDG_BUILD_ID "local-unbuilt"
 #endif

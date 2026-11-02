@@ -15,3 +15,5 @@ build.log
 out/
 research/confirm-abi/*.txt
 research/confirm-abi/objc-verbose.txt
+ipa-79262/
+refs/

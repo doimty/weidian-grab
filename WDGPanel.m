@@ -14,6 +14,7 @@ static const CGFloat kWDGHairlineHeight=0.5;
 static const CGFloat kWDGButtonHeight=46;
 static const CGFloat kWDGButtonRadius=14;
 static const CGFloat kWDGCardMaxHeightRatio=0.72;
+static const CGFloat kWDGFooterHitHeight=44;
 
 @interface WDGPassWindow : UIWindow @end
 @implementation WDGPassWindow
@@ -141,6 +142,139 @@ static NSDictionary *WDGSheetRow(NSString *label,NSString *value,BOOL mono) {ret
 }
 @end
 
+static const CGFloat kWDGMenuRowHeight=48;
+static const CGFloat kWDGMenuCheckSide=16;
+
+@interface WDGMenuItem : NSObject
+@property(nonatomic,copy) NSString *title;
+@property(nonatomic,assign) BOOL checked;
+@property(nonatomic,assign) BOOL destructive;
+@property(nonatomic,assign) BOOL enabled;
+@property(nonatomic,copy) WDGSheetBlock action;
++ (instancetype)itemWithTitle:(NSString *)title checked:(BOOL)checked destructive:(BOOL)destructive action:(WDGSheetBlock)action;
+@end
+
+@implementation WDGMenuItem
+- (instancetype)init {if((self=[super init]))_enabled=YES;return self;}
++ (instancetype)itemWithTitle:(NSString *)title checked:(BOOL)checked destructive:(BOOL)destructive action:(WDGSheetBlock)action {
+    WDGMenuItem *item=[self new];item.title=title?:@"";item.checked=checked;item.destructive=destructive;item.action=action;return item;
+}
+@end
+
+@interface WDGMenuSheetController : UIViewController
+@property(nonatomic,copy) NSString *menuTitle;
+@property(nonatomic,copy) NSString *menuSubtitle;
+@property(nonatomic,copy) NSArray<WDGMenuItem *> *menuItems;
+@property(nonatomic,assign) BOOL menuDismissed;
++ (instancetype)menuWithTitle:(NSString *)title subtitle:(NSString *)subtitle items:(NSArray<WDGMenuItem *> *)items;
+@end
+
+@implementation WDGMenuSheetController
++ (instancetype)menuWithTitle:(NSString *)title subtitle:(NSString *)subtitle items:(NSArray<WDGMenuItem *> *)items {
+    WDGMenuSheetController *menu=[self new];
+    menu.modalPresentationStyle=UIModalPresentationPageSheet;
+    menu.menuTitle=title;menu.menuSubtitle=subtitle;menu.menuItems=[items copy];
+    return menu;
+}
+- (void)viewDidLoad {
+    [super viewDidLoad];
+    self.view.backgroundColor=UIColor.systemBackgroundColor;self.view.accessibilityIdentifier=@"WDG.Menu";
+    UILayoutGuide *safe=self.view.safeAreaLayoutGuide;
+    UIView *cancelBar=[UIView new];cancelBar.translatesAutoresizingMaskIntoConstraints=NO;[self.view addSubview:cancelBar];
+    UIView *cancelLine=[UIView new];cancelLine.translatesAutoresizingMaskIntoConstraints=NO;cancelLine.userInteractionEnabled=NO;
+    cancelLine.backgroundColor=[UIColor.separatorColor colorWithAlphaComponent:0.5];[cancelBar addSubview:cancelLine];
+    UIControl *cancelRow=[self menuRow:@"取消" color:UIColor.secondaryLabelColor checked:NO tag:-1];[cancelBar addSubview:cancelRow];
+    [NSLayoutConstraint activateConstraints:@[
+        [cancelBar.leadingAnchor constraintEqualToAnchor:self.view.leadingAnchor],
+        [cancelBar.trailingAnchor constraintEqualToAnchor:self.view.trailingAnchor],
+        [cancelBar.bottomAnchor constraintEqualToAnchor:safe.bottomAnchor],
+        [cancelLine.leadingAnchor constraintEqualToAnchor:cancelBar.leadingAnchor],
+        [cancelLine.trailingAnchor constraintEqualToAnchor:cancelBar.trailingAnchor],
+        [cancelLine.topAnchor constraintEqualToAnchor:cancelBar.topAnchor],
+        [cancelLine.heightAnchor constraintEqualToConstant:kWDGHairlineHeight],
+        [cancelRow.leadingAnchor constraintEqualToAnchor:cancelBar.leadingAnchor constant:kWDGPadding],
+        [cancelRow.trailingAnchor constraintEqualToAnchor:cancelBar.trailingAnchor constant:-kWDGPadding],
+        [cancelRow.topAnchor constraintEqualToAnchor:cancelLine.bottomAnchor],
+        [cancelRow.bottomAnchor constraintEqualToAnchor:cancelBar.bottomAnchor]]];
+    UIScrollView *scroll=[UIScrollView new];scroll.translatesAutoresizingMaskIntoConstraints=NO;
+    scroll.showsVerticalScrollIndicator=NO;scroll.showsHorizontalScrollIndicator=NO;scroll.alwaysBounceVertical=NO;scroll.alwaysBounceHorizontal=NO;
+    scroll.contentInsetAdjustmentBehavior=UIScrollViewContentInsetAdjustmentNever;[self.view addSubview:scroll];
+    [NSLayoutConstraint activateConstraints:@[
+        [scroll.leadingAnchor constraintEqualToAnchor:safe.leadingAnchor constant:kWDGPadding],
+        [scroll.trailingAnchor constraintEqualToAnchor:safe.trailingAnchor constant:-kWDGPadding],
+        [scroll.topAnchor constraintEqualToAnchor:safe.topAnchor constant:kWDGPadding],
+        [scroll.bottomAnchor constraintEqualToAnchor:cancelBar.topAnchor constant:-kWDGSectionGap]]];
+    UIStackView *stack=[UIStackView new];stack.axis=UILayoutConstraintAxisVertical;stack.spacing=0;stack.translatesAutoresizingMaskIntoConstraints=NO;[scroll addSubview:stack];
+    [NSLayoutConstraint activateConstraints:@[
+        [stack.leadingAnchor constraintEqualToAnchor:scroll.contentLayoutGuide.leadingAnchor],
+        [stack.trailingAnchor constraintEqualToAnchor:scroll.contentLayoutGuide.trailingAnchor],
+        [stack.topAnchor constraintEqualToAnchor:scroll.contentLayoutGuide.topAnchor],
+        [stack.bottomAnchor constraintEqualToAnchor:scroll.contentLayoutGuide.bottomAnchor],
+        [stack.widthAnchor constraintEqualToAnchor:scroll.frameLayoutGuide.widthAnchor]]];
+    UILabel *title=[UILabel new];title.translatesAutoresizingMaskIntoConstraints=NO;title.font=[UIFont systemFontOfSize:17 weight:UIFontWeightSemibold];title.textColor=UIColor.labelColor;title.numberOfLines=0;title.text=self.menuTitle;
+    [stack addArrangedSubview:title];[stack setCustomSpacing:self.menuSubtitle.length?6:14 afterView:title];
+    if(self.menuSubtitle.length){
+        UILabel *subtitle=[UILabel new];subtitle.translatesAutoresizingMaskIntoConstraints=NO;subtitle.font=[UIFont systemFontOfSize:12 weight:UIFontWeightRegular];
+        subtitle.textColor=UIColor.secondaryLabelColor;subtitle.numberOfLines=0;subtitle.text=self.menuSubtitle;
+        [stack addArrangedSubview:subtitle];[stack setCustomSpacing:12 afterView:subtitle];
+    }
+    if(self.menuItems.count){
+        NSMutableArray<UIView *> *views=[NSMutableArray array];
+        for(NSUInteger index=0;index<self.menuItems.count;index++){
+            WDGMenuItem *item=self.menuItems[index];
+            if(index>0)[views addObject:[self menuHairline]];
+            UIControl *row=[self menuRow:item.title color:item.destructive?UIColor.systemRedColor:UIColor.labelColor checked:item.checked tag:(NSInteger)index];
+            row.enabled=item.enabled;if(!item.enabled)row.alpha=0.4;
+            [views addObject:row];
+        }
+        UIStackView *rows=[[UIStackView alloc] initWithArrangedSubviews:views];rows.axis=UILayoutConstraintAxisVertical;rows.spacing=0;rows.translatesAutoresizingMaskIntoConstraints=NO;
+        [stack addArrangedSubview:rows];
+    }
+}
+- (UIView *)menuHairline {
+    UIView *line=[UIView new];line.translatesAutoresizingMaskIntoConstraints=NO;line.userInteractionEnabled=NO;
+    line.backgroundColor=[UIColor.separatorColor colorWithAlphaComponent:0.5];
+    [line.heightAnchor constraintEqualToConstant:kWDGHairlineHeight].active=YES;return line;
+}
+- (UIControl *)menuRow:(NSString *)title color:(UIColor *)color checked:(BOOL)checked tag:(NSInteger)tag {
+    WDGRowControl *row=[WDGRowControl new];row.translatesAutoresizingMaskIntoConstraints=NO;row.tag=tag;
+    row.layer.cornerRadius=10;row.layer.cornerCurve=kCACornerCurveContinuous;row.layer.masksToBounds=YES;
+    row.accessibilityLabel=title;row.accessibilityIdentifier=tag<0?@"WDG.MenuCancel":[NSString stringWithFormat:@"WDG.MenuRow.%ld",(long)tag];
+    UILabel *label=[UILabel new];label.translatesAutoresizingMaskIntoConstraints=NO;label.userInteractionEnabled=NO;
+    label.font=[UIFont systemFontOfSize:15 weight:UIFontWeightRegular];label.textColor=color;label.text=title;
+    label.numberOfLines=2;label.lineBreakMode=NSLineBreakByTruncatingTail;[row addSubview:label];
+    NSMutableArray<NSLayoutConstraint *> *rules=[NSMutableArray arrayWithObjects:
+        [label.leadingAnchor constraintEqualToAnchor:row.leadingAnchor],
+        [label.centerYAnchor constraintEqualToAnchor:row.centerYAnchor],
+        [label.topAnchor constraintGreaterThanOrEqualToAnchor:row.topAnchor constant:11],
+        [label.bottomAnchor constraintLessThanOrEqualToAnchor:row.bottomAnchor constant:-11],
+        [row.heightAnchor constraintGreaterThanOrEqualToConstant:kWDGMenuRowHeight],nil];
+    UIView *right=nil;
+    if(checked){
+        UIImageSymbolConfiguration *config=[UIImageSymbolConfiguration configurationWithPointSize:15 weight:UIImageSymbolWeightSemibold];
+        UIImageView *check=[[UIImageView alloc] initWithImage:[UIImage systemImageNamed:@"checkmark" withConfiguration:config]];
+        check.tintColor=WDGSheetAccent();check.contentMode=UIViewContentModeScaleAspectFit;check.translatesAutoresizingMaskIntoConstraints=NO;check.userInteractionEnabled=NO;[row addSubview:check];
+        [rules addObjectsFromArray:@[[check.trailingAnchor constraintEqualToAnchor:row.trailingAnchor],[check.centerYAnchor constraintEqualToAnchor:row.centerYAnchor],[check.widthAnchor constraintEqualToConstant:kWDGMenuCheckSide],[check.heightAnchor constraintEqualToConstant:kWDGMenuCheckSide]]];
+        right=check;
+    }
+    if(right)[rules addObject:[label.trailingAnchor constraintLessThanOrEqualToAnchor:right.leadingAnchor constant:-10]];
+    else [rules addObject:[label.trailingAnchor constraintLessThanOrEqualToAnchor:row.trailingAnchor]];
+    [NSLayoutConstraint activateConstraints:rules];
+    [row addTarget:self action:@selector(tapMenuRow:) forControlEvents:UIControlEventTouchUpInside];
+    return row;
+}
+- (void)tapMenuRow:(WDGRowControl *)sender {
+    if(self.menuDismissed||!self.view.window||!sender.enabled)return;
+    NSInteger index=sender.tag;
+    if(index>=0&&(NSUInteger)index>=self.menuItems.count)return;
+    WDGMenuItem *item=index>=0?self.menuItems[(NSUInteger)index]:nil;
+    if(item&&!item.enabled)return;
+    WDGSheetBlock action=[item.action copy];
+    self.menuDismissed=YES;self.view.userInteractionEnabled=NO;
+    [self dismissViewControllerAnimated:YES completion:^{if(action)action();}];
+}
+@end
+
 @interface WDGPanel : NSObject <UIAdaptivePresentationControllerDelegate>
 @property(nonatomic,strong) WDGPassWindow *window;
 @property(nonatomic,weak) UIWindow *previousKey;
@@ -152,6 +286,7 @@ static NSDictionary *WDGSheetRow(NSString *label,NSString *value,BOOL mono) {ret
 @property(nonatomic,strong) UILabel *statusLabel;
 @property(nonatomic,strong) UILabel *statusDetail;
 @property(nonatomic,strong) UILabel *versionLabel;
+@property(nonatomic,strong) UIButton *exportLink;
 @property(nonatomic,strong) UIView *statusDot;
 @property(nonatomic,strong) UILabel *lanesBadge;
 @property(nonatomic,strong) UILabel *clockDetail;
@@ -189,6 +324,16 @@ static NSDictionary *WDGSheetRow(NSString *label,NSString *value,BOOL mono) {ret
     [b setImage:[UIImage systemImageNamed:symbol withConfiguration:config] forState:UIControlStateNormal];b.tintColor=UIColor.secondaryLabelColor;
     b.accessibilityLabel=label;[b addTarget:self action:selector forControlEvents:UIControlEventTouchUpInside];
     [b.widthAnchor constraintEqualToConstant:32].active=YES;[b.heightAnchor constraintEqualToConstant:32].active=YES;return b;
+}
+- (UIButton *)textLink:(NSString *)text action:(SEL)selector {
+    UIButton *b=[UIButton buttonWithType:UIButtonTypeSystem];b.translatesAutoresizingMaskIntoConstraints=NO;
+    b.backgroundColor=UIColor.clearColor;b.layer.borderWidth=0;b.tintColor=UIColor.secondaryLabelColor;
+    NSDictionary<NSAttributedStringKey,id> *attributes=@{NSFontAttributeName:[UIFont systemFontOfSize:11 weight:UIFontWeightRegular],
+        NSForegroundColorAttributeName:UIColor.secondaryLabelColor,
+        NSUnderlineStyleAttributeName:@(NSUnderlineStyleSingle)};
+    [b setAttributedTitle:[[NSAttributedString alloc] initWithString:text attributes:attributes] forState:UIControlStateNormal];
+    b.accessibilityLabel=text;[b addTarget:self action:selector forControlEvents:UIControlEventTouchUpInside];
+    return b;
 }
 - (UIView *)hairline {
     UIView *line=[UIView new];line.translatesAutoresizingMaskIntoConstraints=NO;line.userInteractionEnabled=NO;
@@ -326,8 +471,8 @@ static NSDictionary *WDGSheetRow(NSString *label,NSString *value,BOOL mono) {ret
     self.timeButton=[self rowWithSymbol:@"clock" title:[self rowTitle:@"开抢时间"] detail:[self rowDetail:@"点按选择 · 秒归零"] value:self.timeValue chevron:YES];
     self.timeButton.accessibilityIdentifier=@"WDG.OpenTimePicker";[self.timeButton addTarget:self action:@selector(showTimePicker) forControlEvents:UIControlEventTouchUpInside];
     self.clockDetail=[self rowDetail:nil];self.clockDetail.text=[self clockSummary:WDGCore.shared.status[@"clock"]];
-    UIControl *clockRow=[self rowWithSymbol:@"arrow.triangle.2.circlepath" title:[self rowTitle:@"时钟校准"] detail:self.clockDetail value:nil chevron:YES];
-    clockRow.accessibilityIdentifier=@"WDG.ClockRow";clockRow.accessibilityLabel=@"时钟校准，点按查看来源与说明";[clockRow addTarget:self action:@selector(readServerClock) forControlEvents:UIControlEventTouchUpInside];
+    UIControl *clockRow=[self rowWithSymbol:@"arrow.triangle.2.circlepath" title:[self rowTitle:@"时钟校准"] detail:self.clockDetail value:nil chevron:NO];
+    clockRow.accessibilityIdentifier=@"WDG.ClockRow";clockRow.accessibilityLabel=@"时钟校准，只读展示";clockRow.userInteractionEnabled=NO;
     UIView *amountBox=[UIView new];amountBox.translatesAutoresizingMaskIntoConstraints=NO;
     UILabel *currency=[self label:13 weight:UIFontWeightMedium];currency.text=@"¥";currency.textColor=UIColor.secondaryLabelColor;currency.numberOfLines=1;
     self.maximumAmount=[UITextField new];self.maximumAmount.placeholder=@"0.00";self.maximumAmount.borderStyle=UITextBorderStyleNone;self.maximumAmount.backgroundColor=UIColor.clearColor;self.maximumAmount.keyboardType=UIKeyboardTypeDecimalPad;self.maximumAmount.textAlignment=NSTextAlignmentRight;self.maximumAmount.font=[UIFont monospacedDigitSystemFontOfSize:22 weight:UIFontWeightSemibold];self.maximumAmount.textColor=UIColor.labelColor;self.maximumAmount.tintColor=[self accent];self.maximumAmount.adjustsFontSizeToFitWidth=YES;self.maximumAmount.minimumFontSize=16;self.maximumAmount.accessibilityLabel=@"最高实付金额，含运费";self.maximumAmount.accessibilityIdentifier=@"WDG.MaximumTotal";self.maximumAmount.translatesAutoresizingMaskIntoConstraints=NO;
@@ -350,7 +495,13 @@ static NSDictionary *WDGSheetRow(NSString *label,NSString *value,BOOL mono) {ret
     [stack addArrangedSubview:self.statusDetail];
     self.primaryButton=[UIButton buttonWithType:UIButtonTypeSystem];self.primaryButton.backgroundColor=[self accent];self.primaryButton.layer.cornerRadius=kWDGButtonRadius;self.primaryButton.layer.cornerCurve=kCACornerCurveContinuous;[self.primaryButton setTitleColor:UIColor.whiteColor forState:UIControlStateNormal];self.primaryButton.titleLabel.font=[UIFont systemFontOfSize:16 weight:UIFontWeightSemibold];[self.primaryButton setTitle:@"准备抢购" forState:UIControlStateNormal];self.primaryButton.accessibilityIdentifier=@"WDG.ArmTask";[self.primaryButton.heightAnchor constraintEqualToConstant:kWDGButtonHeight].active=YES;[self.primaryButton addTarget:self action:@selector(schedule) forControlEvents:UIControlEventTouchUpInside];[stack addArrangedSubview:self.primaryButton];
     self.cancelButton=[UIButton buttonWithType:UIButtonTypeSystem];self.cancelButton.tintColor=UIColor.secondaryLabelColor;self.cancelButton.titleLabel.font=[UIFont systemFontOfSize:13 weight:UIFontWeightMedium];[self.cancelButton setTitle:@"取消任务" forState:UIControlStateNormal];[self.cancelButton addTarget:self action:@selector(cancel) forControlEvents:UIControlEventTouchUpInside];self.cancelButton.accessibilityIdentifier=@"WDG.CancelTask";self.cancelButton.hidden=YES;[stack addArrangedSubview:self.cancelButton];
-    self.versionLabel=[self label:10 weight:UIFontWeightRegular];self.versionLabel.textColor=UIColor.tertiaryLabelColor;self.versionLabel.textAlignment=NSTextAlignmentCenter;self.versionLabel.numberOfLines=1;[stack addArrangedSubview:self.versionLabel];
+    self.versionLabel=[self label:10 weight:UIFontWeightRegular];self.versionLabel.textColor=UIColor.tertiaryLabelColor;self.versionLabel.textAlignment=NSTextAlignmentRight;self.versionLabel.numberOfLines=1;self.versionLabel.userInteractionEnabled=NO;
+    self.exportLink=[self textLink:@"导出诊断" action:@selector(export)];self.exportLink.accessibilityIdentifier=@"WDG.ExportDiagnostics";
+    UIView *footerLeft=[UIView new],*footerRight=[UIView new];
+    UIStackView *footer=[[UIStackView alloc] initWithArrangedSubviews:@[footerLeft,self.versionLabel,self.exportLink,footerRight]];
+    footer.axis=UILayoutConstraintAxisHorizontal;footer.alignment=UIStackViewAlignmentCenter;footer.spacing=8;
+    [footerLeft.widthAnchor constraintEqualToAnchor:footerRight.widthAnchor].active=YES;
+    [footer.heightAnchor constraintEqualToConstant:kWDGFooterHitHeight].active=YES;[stack addArrangedSubview:footer];
     [self updateTimeDisplay];
 }
 - (void)focusAmount {if(self.maximumAmount.enabled)[self.maximumAmount becomeFirstResponder];}
@@ -415,14 +566,21 @@ static NSDictionary *WDGSheetRow(NSString *label,NSString *value,BOOL mono) {ret
     presentation.prefersGrabberVisible=YES;presentation.preferredCornerRadius=kWDGCardRadius;
     [self.window.rootViewController presentViewController:sheet animated:YES completion:nil];
 }
+- (void)presentMenu:(UIViewController *)menu {
+    UISheetPresentationController *presentation=menu.sheetPresentationController;
+    presentation.detents=@[UISheetPresentationControllerDetent.mediumDetent];
+    presentation.prefersGrabberVisible=YES;presentation.preferredCornerRadius=kWDGCardRadius;
+    [self.window.rootViewController presentViewController:menu animated:YES completion:nil];
+}
 - (void)chooseCartTarget {
     NSArray *rows=[[NSArray alloc] initWithArray:WDGCartCandidates() copyItems:YES];
     if(!rows.count){[self alert:@"先刷新一下购物车" message:@"助手会自动读取商品。未开售的条目也能在这里选择。 "];return;}
     BOOL explicit=[WDGCartDiagnostics()[@"selectionSource"] isEqual:@"assistant_explicit"];
-    UIAlertController *a=[UIAlertController alertControllerWithTitle:@"要抢哪件" message:explicit?@"当前来源：手动指定\n只选择目标，不修改购物车、不下单。":@"当前来源：购物车勾选（默认）\n只选择目标，不修改购物车、不下单。" preferredStyle:UIAlertControllerStyleActionSheet];
-    [a addAction:[UIAlertAction actionWithTitle:@"跟随购物车勾选项（默认）" style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *v){if(![rows isEqual:WDGCartCandidates()]){[self alert:@"购物车有更新" message:@"请重新选择目标。 "];return;}WDGCartChooseLine(nil);[self refresh];}]];
-    for(NSDictionary *row in rows){NSString *key=[row[@"lineKey"] copy];NSDictionary *raw=[WDGCartRawLine(key) copy];NSString *title=[NSString stringWithFormat:@"%@ · %@ × %@",row[@"title"]?:@"商品",row[@"skuTitle"]?:@"未选规格",row[@"quantity"]?:@"?"];[a addAction:[UIAlertAction actionWithTitle:title style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *v){if(!raw||![raw isEqual:WDGCartRawLine(key)]||!WDGCartChooseLine(key)){[self alert:@"商品已更新" message:@"请重新核对规格和数量。 "];return;}[self refresh];}]];}
-    [a addAction:[UIAlertAction actionWithTitle:@"取消" style:UIAlertActionStyleCancel handler:nil]];a.popoverPresentationController.sourceView=self.card;a.popoverPresentationController.sourceRect=self.card.bounds;[self.window.rootViewController presentViewController:a animated:YES completion:nil];
+    NSMutableArray<WDGMenuItem *> *items=[NSMutableArray array];
+    [items addObject:[WDGMenuItem itemWithTitle:@"跟随购物车勾选项（默认）" checked:!explicit destructive:NO action:^{if(![rows isEqual:WDGCartCandidates()]){[self alert:@"购物车有更新" message:@"请重新选择目标。 "];return;}WDGCartChooseLine(nil);[self refresh];}]];
+    for(NSDictionary *row in rows){NSString *key=[row[@"lineKey"] copy];NSDictionary *raw=[WDGCartRawLine(key) copy];NSString *title=[NSString stringWithFormat:@"%@ · %@ × %@",row[@"title"]?:@"商品",row[@"skuTitle"]?:@"未选规格",row[@"quantity"]?:@"?"];[items addObject:[WDGMenuItem itemWithTitle:title checked:NO destructive:NO action:^{if(!raw||![raw isEqual:WDGCartRawLine(key)]||!WDGCartChooseLine(key)){[self alert:@"商品已更新" message:@"请重新核对规格和数量。 "];return;}[self refresh];}]];}
+    NSString *subtitle=explicit?@"当前来源：手动指定\n只选择目标，不修改购物车、不下单。":@"当前来源：购物车勾选（默认）\n只选择目标，不修改购物车、不下单。";
+    [self presentMenu:[WDGMenuSheetController menuWithTitle:@"要抢哪件" subtitle:subtitle items:items]];
 }
 - (NSDate *)selectedMinute {
     NSCalendar *c=[(self.datePicker.calendar?:NSCalendar.currentCalendar) copy];c.timeZone=self.datePicker.timeZone?:NSTimeZone.localTimeZone;
@@ -459,64 +617,6 @@ static NSDictionary *WDGSheetRow(NSString *label,NSString *value,BOOL mono) {ret
     }
     return local;
 }
-- (NSString *)clockSourceText:(NSDictionary *)clock {
-    NSString *source=clock[@"source"]?:@"none";
-    return [source isEqual:@"WDTNServerClockProofreader"]?@"微店原生":source;
-}
-- (NSArray<NSDictionary *> *)clockReviewRows:(NSDictionary *)clock announced:(NSDate *)date localDue:(NSDate *)localDue {
-    NSTimeZone *zone=self.datePicker.timeZone?:NSTimeZone.localTimeZone;
-    NSDateFormatter *df=[NSDateFormatter new];df.locale=[[NSLocale alloc] initWithLocaleIdentifier:@"zh_CN"];df.timeZone=zone;df.dateFormat=@"yyyy-MM-dd HH:mm:ss";
-    BOOL native=[clock[@"valid"] boolValue]&&[clock[@"status"] isEqual:@"native_recent"];
-    NSMutableArray<NSDictionary *> *rows=[NSMutableArray array];
-    [rows addObject:WDGSheetRow(@"公告时刻",[df stringFromDate:date],YES)];
-    [rows addObject:WDGSheetRow(native?@"本地校正时刻":@"本地执行时刻",[df stringFromDate:localDue],YES)];
-    [rows addObject:WDGSheetRow(@"时区",zone.name,NO)];
-    [rows addObject:WDGSheetRow(@"模式",native?@"按微店时钟校正一次":@"回退 · 按本地时间运行",NO)];
-    [rows addObject:WDGSheetRow(@"时钟",[self clockSummary:clock],NO)];
-    [rows addObject:WDGSheetRow(@"来源",[NSString stringWithFormat:@"%@ · %@",[self clockSourceText:clock],clock[@"status"]?:@"unavailable"],NO)];
-    NSString *reason=clock[@"reason"];if(reason.length)[rows addObject:WDGSheetRow(@"原因",reason,NO)];
-    return rows;
-}
-- (void)readServerClock {
-    [WDGCore.shared refreshServerClock];NSDictionary *clock=WDGCore.shared.status[@"clock"];[self refresh];
-    BOOL native=[clock[@"valid"] boolValue]&&[clock[@"status"] isEqual:@"native_recent"];
-    NSString *title=native?[self clockSummary:clock]:@"本地时间 · 未校准";
-    NSString *status=native?@"有效（5 秒内）":(clock[@"status"]?:@"unavailable");
-    NSMutableArray<NSDictionary *> *rows=[NSMutableArray array];
-    [rows addObject:WDGSheetRow(@"来源",[self clockSourceText:clock],NO)];
-    [rows addObject:WDGSheetRow(@"状态",status,NO)];
-    if(native){
-        NSString *deviation=[clock[@"offsetMs"] isKindOfClass:NSNumber.class]?[NSString stringWithFormat:@"%+.0f ms",[clock[@"offsetMs"] doubleValue]]:@"—";
-        [rows addObject:WDGSheetRow(@"偏差",deviation,YES)];
-    } else {
-        NSString *reason=clock[@"reason"];if(!reason.length)reason=@"无有效样本 · 按本地时间执行";
-        [rows addObject:WDGSheetRow(@"原因",reason,NO)];
-    }
-    WDGSheetController *sheet=[WDGSheetController sheetWithTitle:title rows:rows footnote:@"只读缓存，不联网、不测 RTT、不改系统时间" warning:NO primaryTitle:@"知道了" primaryAction:nil secondaryTitle:@"说明"];
-    sheet.secondaryAction=^{[self explainServerClock];};
-    [self presentSheet:sheet];
-}
-- (void)explainServerClock {
-    NSArray<NSDictionary *> *rows=@[WDGSheetRow(@"数据来源",@"微店缓存样本（只读）",NO),
-        WDGSheetRow(@"联网",@"不联网、不测 RTT",NO),
-        WDGSheetRow(@"系统时间",@"不修改",NO),
-        WDGSheetRow(@"精度",@"显示偏差，非毫秒精度",NO),
-        WDGSheetRow(@"生效范围",@"仅下一笔任务，确认与执行前重核对",NO)];
-    WDGSheetController *sheet=[WDGSheetController sheetWithTitle:@"时钟说明" rows:rows footnote:nil warning:NO primaryTitle:@"知道了" primaryAction:nil secondaryTitle:nil];
-    [self presentSheet:sheet];
-}
-- (void)validateCartParameters {
-    NSDecimalNumber *maximum=[self maximumValue];if(!maximum)return;
-    NSDate *date=[self selectedMinute];NSDictionary *clock=nil;NSDate *localDue=[self localDeadlineForDate:date clockSnapshot:&clock];if(!localDue)return;
-    NSString *key=[WDGCartSnapshotKey() copy];if(!key.length){[self alert:@"先选好商品" message:@"刷新购物车或点商品卡选择目标。 "];return;}
-    NSError *error=nil;id request=WDGCartBuildRequest(&error);
-    WDGOrderService *s=request?[WDGOrderService preparePreheatRequest:request sampleKey:key payType:nil error:&error]:nil;
-    if(![key isEqual:WDGCartSnapshotKey()]){[self alert:@"目标已变化" message:@"请重新选择后校验。 "];return;}
-    if(!s||![s configureConcurrentLanes:self.concurrentLanes error:&error]||![s configureCartDueAt:localDue maximumTotal:maximum error:&error]){[self alert:@"本地校验未通过" message:error.localizedDescription?:@"请核对商品和规格。 "];return;}
-    [self endEditing];
-    WDGSheetController *sheet=[WDGSheetController sheetWithTitle:@"本地参数校验成功" rows:[self clockReviewRows:clock announced:date localDue:localDue] footnote:@"商品请求、原生服务与金额参数已就绪。未联网，未设置任务，未调用确认或创建订单接口。最终地址、运费及实付仍由服务端确认。只读已有样本，未网络测 RTT；偏差不是精度保证。" warning:NO primaryTitle:@"知道了" primaryAction:nil secondaryTitle:nil];
-    [self presentSheet:sheet];
-}
 - (void)schedule {
     NSDecimalNumber *maximum=[self maximumValue];if(!maximum)return;[self endEditing];
     NSArray *items=[[NSArray alloc] initWithArray:WDGCartSelectedLines() copyItems:YES];NSString *key=[WDGCartSnapshotKey() copy];NSArray *keys=[[items valueForKey:@"lineKey"] sortedArrayUsingSelector:@selector(compare:)];
@@ -529,6 +629,8 @@ static NSDictionary *WDGSheetRow(NSString *label,NSString *value,BOOL mono) {ret
     NSMutableDictionary *productRow=[WDGSheetRow(@"商品",[NSString stringWithFormat:@"%@ · %@ × %@%@",first[@"title"]?:@"商品",first[@"skuTitle"]?:@"未选规格",first[@"quantity"]?:@"?",items.count>1?[NSString stringWithFormat:@" · 共 %lu 条",(unsigned long)items.count]:@""],NO) mutableCopy];
     productRow[@"middle"]=@YES;
     NSString *footnote=lanes>1?[NSString stringWithFormat:@"可能重复下单：同商品最多 %lu 单，总扣款上限 ¥%@；单笔实付超过最高实付即停止提交。首个成功不会撤销其余已发请求",(unsigned long)lanes,[self formattedAmount:total]]:@"到点创建 1 次真实订单，实付超过最高实付即停止提交，不打开支付链接";
+    NSNumber *retryAttempts=WDGCore.shared.status[@"task"][@"retryAttempts"];
+    if([WDGCore.shared.status[@"retryEnabled"] boolValue]) footnote=[footnote stringByAppendingFormat:@"；明确未建单时最多重发 %lu 次，结果未知则不再重发",(unsigned long)(retryAttempts.unsignedIntegerValue?:3)];
     NSString *sheetTitle=lanes>1?[NSString stringWithFormat:@"确认 %lu 路竞速任务",(unsigned long)lanes]:@"确认这笔任务";
     NSString *primaryTitle=lanes>1?[NSString stringWithFormat:@"确认 %lu 路 · 接受最多%lu单",(unsigned long)lanes,(unsigned long)lanes]:@"确认单路 · 最多1单";
     WDGSheetController *sheet=[WDGSheetController sheetWithTitle:sheetTitle
@@ -540,33 +642,30 @@ static NSDictionary *WDGSheetRow(NSString *label,NSString *value,BOOL mono) {ret
     [self presentSheet:sheet];
 }
 - (void)cancel {[WDGCore.shared cancelTask:@"用户取消任务"];}
-- (void)localTest {NSError *error=nil;if(![WDGCore.shared armAt:[NSDate dateWithTimeIntervalSinceNow:5] action:@"dryRun" payType:nil error:&error])[self alert:@"演练未开始" message:error.localizedDescription];}
 - (void)export {
     NSError *error=nil;NSString *file=[WDGCore.shared exportReport:&error];if(!file){[self alert:@"导出失败" message:error.localizedDescription?:@"请稍后重试"];return;}
     UIActivityViewController *a=[[UIActivityViewController alloc] initWithActivityItems:@[[NSURL fileURLWithPath:file]] applicationActivities:nil];a.popoverPresentationController.sourceView=self.card;a.popoverPresentationController.sourceRect=self.card.bounds;[self.window.rootViewController presentViewController:a animated:YES completion:nil];
 }
 - (void)chooseConcurrentLanes {
-    UIAlertController *a=[UIAlertController alertControllerWithTitle:@"下单并发" message:@"多路会对同一订单目标同时发出多个请求，可能分别成功并重复下单。最终确认会列出最多订单数及总扣款上限。" preferredStyle:UIAlertControllerStyleActionSheet];
-    [a addAction:[UIAlertAction actionWithTitle:self.concurrentLanes==1?@"✓ 单路（默认）":@"单路（默认）" style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *v){self.concurrentLanes=1;[self refresh];}]];
-    [a addAction:[UIAlertAction actionWithTitle:self.concurrentLanes==2?@"✓ 双路 · 可能重复下单":@"双路 · 可能重复下单" style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *v){self.concurrentLanes=2;[self refresh];}]];
-    [a addAction:[UIAlertAction actionWithTitle:self.concurrentLanes==4?@"✓ 四路 · 最多 4 单":@"四路 · 最多 4 单" style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *v){self.concurrentLanes=4;[self refresh];}]];
-    [a addAction:[UIAlertAction actionWithTitle:@"取消" style:UIAlertActionStyleCancel handler:nil]];a.popoverPresentationController.sourceView=self.card;a.popoverPresentationController.sourceRect=self.card.bounds;[self.window.rootViewController presentViewController:a animated:YES completion:nil];
+    NSMutableArray<WDGMenuItem *> *items=[NSMutableArray array];
+    NSArray<NSString *> *titles=@[@"单路（默认）",@"双路 · 可能重复下单",@"四路 · 最多 4 单"];
+    NSArray<NSNumber *> *values=@[@1,@2,@4];
+    for(NSUInteger index=0;index<titles.count;index++){
+        NSUInteger lanes=values[index].unsignedIntegerValue;
+        [items addObject:[WDGMenuItem itemWithTitle:titles[index] checked:self.concurrentLanes==lanes destructive:NO action:^{self.concurrentLanes=lanes;[self refresh];}]];
+    }
+    [self presentMenu:[WDGMenuSheetController menuWithTitle:@"下单并发" subtitle:@"多路会对同一订单目标同时发出多个请求，可能分别成功并重复下单。最终确认会列出最多订单数及总扣款上限。" items:items]];
 }
 - (void)showMore {
-    [self endEditing];UIAlertController *a=[UIAlertController alertControllerWithTitle:@"更多" message:nil preferredStyle:UIAlertControllerStyleActionSheet];
-    UIAlertAction *lanes=[UIAlertAction actionWithTitle:self.concurrentLanes>1?[NSString stringWithFormat:@"并发：%lu 路",(unsigned long)self.concurrentLanes]:@"并发：单路" style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *v){[self chooseConcurrentLanes];}];lanes.enabled=self.primaryButton.enabled;[a addAction:lanes];
-    BOOL retryOn=[WDGCore.shared.status[@"task"][@"retryEnabled"] boolValue];
-    [a addAction:[UIAlertAction actionWithTitle:retryOn?@"循环重发：已开启（最多 3 次）":@"循环重发：已关闭" style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *v){[WDGCore.shared setRetryEnabled:!retryOn attempts:3];[self refresh];}]];
+    [self endEditing];
+    NSMutableArray<WDGMenuItem *> *items=[NSMutableArray array];
+    WDGMenuItem *lanes=[WDGMenuItem itemWithTitle:self.concurrentLanes>1?[NSString stringWithFormat:@"并发：%lu 路",(unsigned long)self.concurrentLanes]:@"并发：单路" checked:NO destructive:NO action:^{[self chooseConcurrentLanes];}];
+    lanes.enabled=self.primaryButton.enabled;[items addObject:lanes];
+    BOOL retryOn=[WDGCore.shared.status[@"retryEnabled"] boolValue];
+    [items addObject:[WDGMenuItem itemWithTitle:retryOn?@"循环重发：已开启（最多 3 次）":@"循环重发：已关闭" checked:NO destructive:NO action:^{[WDGCore.shared setRetryEnabled:!retryOn attempts:3];[self refresh];}]];
     BOOL adsOn=[WDGCore.shared.status[@"ads"][@"enabled"] boolValue];
-    [a addAction:[UIAlertAction actionWithTitle:adsOn?@"去广告：已开启（点按关闭）":@"去广告：已关闭（点按开启）" style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *v){[WDGCore.shared setAdsEnabled:!adsOn];}]];
-    [a addAction:[UIAlertAction actionWithTitle:@"读取微店时钟" style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *v){[self readServerClock];}]];
-    [a addAction:[UIAlertAction actionWithTitle:@"校验参数（不联网）" style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *v){[self validateCartParameters];}]];
-    [a addAction:[UIAlertAction actionWithTitle:@"5 秒本地演练" style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *v){[self localTest];}]];
-    [a addAction:[UIAlertAction actionWithTitle:@"导出诊断" style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *v){[self export];}]];
-    BOOL capture=[WDGCore.shared.status[@"captureEnabled"] boolValue];
-    [a addAction:[UIAlertAction actionWithTitle:capture?@"暂停自动采集":@"开启自动采集" style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *v){[WDGCore.shared setCaptureEnabled:!capture];}]];
-    [a addAction:[UIAlertAction actionWithTitle:@"清空采集" style:UIAlertActionStyleDestructive handler:^(__unused UIAlertAction *v){[WDGCore.shared clearSnapshot];}]];
-    [a addAction:[UIAlertAction actionWithTitle:@"取消" style:UIAlertActionStyleCancel handler:nil]];a.popoverPresentationController.sourceView=self.card;a.popoverPresentationController.sourceRect=self.card.bounds;[self.window.rootViewController presentViewController:a animated:YES completion:nil];
+    [items addObject:[WDGMenuItem itemWithTitle:adsOn?@"去广告：已开启（点按关闭）":@"去广告：已关闭（点按开启）" checked:NO destructive:NO action:^{[WDGCore.shared setAdsEnabled:!adsOn];}]];
+    [self presentMenu:[WDGMenuSheetController menuWithTitle:@"更多" subtitle:nil items:items]];
 }
 @end
 void WDGShowOverlay(void) {

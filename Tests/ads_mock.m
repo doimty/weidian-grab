@@ -9,6 +9,14 @@ static NSUInteger gAssertions, gCasesPassed, gCasesFailed;
 static NSUInteger gOriginalSplashCalls, gOriginalHotCalls, gOriginalSDKCalls;
 static NSUInteger gOriginalMaterialCalls, gOriginalNormalCalls, gOriginalRequestCalls;
 static NSUInteger gOriginalRegisterCalls;
+static NSUInteger gOriginalWindmillCalls;
+
+@interface WDWindmillSplashAdViewController : NSObject
++ (void)showWindmillSplashAdWithHotLaunch:(BOOL)hot;
+@end
+@implementation WDWindmillSplashAdViewController
++ (void)showWindmillSplashAdWithHotLaunch:(BOOL)hot { ++gOriginalWindmillCalls; (void)hot; }
+@end
 
 @interface WDBSplashManager : NSObject
 + (BOOL)showSplashIfNeeded;
@@ -74,6 +82,15 @@ static void ClassNameFilter(void) {
     REQUIRE(WDGAdsShouldBlockCardClass(@"WDBFooGoldenADCard"), @"golden ad card was not blocked");
 }
 
+static void ControllerFilter(void) {
+    REQUIRE(WDGAdsShouldBlockControllerClass(@"WDWindmillSplashAdViewController"), @"WindMill splash VC not blocked");
+    REQUIRE(WDGAdsShouldBlockControllerClass(@"GDTInterstitialViewController"), @"interstitial VC not blocked");
+    REQUIRE(WDGAdsShouldBlockControllerClass(@"CSJRewardedVideoAdViewController"), @"rewarded VC not blocked");
+    REQUIRE(!WDGAdsShouldBlockControllerClass(@"WDBItemUpdateAddressDO"), @"address controller blocked");
+    REQUIRE(!WDGAdsShouldBlockControllerClass(@"WDBSplashViewController"), @"app's own splash page wrongly blocked");
+    REQUIRE(!WDGAdsShouldBlockControllerClass(nil), @"nil controller name blocked");
+}
+
 static void InstallAndSplash(void) {
     WDGAdsInstall();
     NSDictionary *diagnostics = WDGAdsDiagnostics();
@@ -88,10 +105,12 @@ static void InstallAndSplash(void) {
     REQUIRE([WDBSplashManager _showAvailableMaterialWithHotLaunch:YES] == NO, @"splash material was allowed");
     REQUIRE([WDBSplashManager _showNormalSplash:@"x" index:1] == NO, @"normal splash was allowed");
     [WDBSplashManager requestSplashData];
+    [WDWindmillSplashAdViewController showWindmillSplashAdWithHotLaunch:YES];
+    REQUIRE(gOriginalWindmillCalls == 0, @"WindMill splash original still ran");
     REQUIRE(gOriginalSplashCalls + gOriginalHotCalls + gOriginalSDKCalls +
             gOriginalMaterialCalls + gOriginalNormalCalls + gOriginalRequestCalls == 0,
             @"an original splash implementation still ran");
-    REQUIRE([WDGAdsDiagnostics()[@"splashBlocked"] unsignedIntegerValue] >= 6,
+    REQUIRE([WDGAdsDiagnostics()[@"splashBlocked"] unsignedIntegerValue] >= 7,
             @"splash blocks were not counted");
 }
 
@@ -113,6 +132,8 @@ static void DisabledPassThrough(void) {
     WDGAdsSetEnabled(NO);
     REQUIRE([WDBSplashManager showSplashIfNeeded] == YES, @"disabled switch still blocked the splash");
     REQUIRE(gOriginalSplashCalls == 1, @"original splash did not run when disabled");
+    [WDWindmillSplashAdViewController showWindmillSplashAdWithHotLaunch:NO];
+    REQUIRE(gOriginalWindmillCalls == 1, @"disabled switch still blocked the WindMill splash");
     WDBBaseCardManager *manager = [WDBBaseCardManager new];
     [manager registerCard:WDBHomeHalfCpcCard.class withCardType:7];
     REQUIRE(gOriginalRegisterCalls == 2, @"disabled switch still skipped registration");
@@ -133,6 +154,7 @@ static void IdempotentInstall(void) {
 int main(void) {
     @autoreleasepool {
         Case(@"card class name filter", ^{ ClassNameFilter(); });
+        Case(@"full-screen ad controller filter", ^{ ControllerFilter(); });
         Case(@"splash suppression", ^{ InstallAndSplash(); });
         Case(@"card registration block", ^{ CardRegistration(); });
         Case(@"disabled switch passes through", ^{ DisabledPassThrough(); });

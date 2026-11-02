@@ -5,6 +5,7 @@ NS_ASSUME_NONNULL_BEGIN
 // changes the account, and never blocks the app's own business requests.
 // Cards whose class is registration-denied simply do not render.
 FOUNDATION_EXPORT BOOL WDGAdsShouldBlockCardClass(NSString * _Nullable className);
+FOUNDATION_EXPORT BOOL WDGAdsShouldBlockControllerClass(NSString * _Nullable className);
 FOUNDATION_EXPORT BOOL WDGAdsEnabled(void);
 FOUNDATION_EXPORT void WDGAdsSetEnabled(BOOL enabled);
 FOUNDATION_EXPORT NSDictionary *WDGAdsDiagnostics(void);

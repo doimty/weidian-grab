@@ -35,6 +35,16 @@ static BOOL WDGAdsArgumentIs(Method method, unsigned int index, char expected) {
     return type[0] == expected && type[1] == '\0';
 }
 
+BOOL WDGAdsShouldBlockControllerClass(NSString *className) {
+    if (![className isKindOfClass:NSString.class] || className.length == 0) return NO;
+    // Only full-screen paid formats. Deliberately excludes ordinary pages whose
+    // names merely contain "Ad" such as address books or admin tools.
+    if ([className containsString:@"SplashAd"]) return YES;
+    if ([className containsString:@"Interstitial"]) return YES;
+    if ([className containsString:@"RewardedVideo"] || [className containsString:@"RewardVideo"]) return YES;
+    if ([className containsString:@"WindMillSplash"] || [className containsString:@"WindmillSplash"]) return YES;
+    return NO;
+}
 BOOL WDGAdsShouldBlockCardClass(NSString *className) {
     if (![className isKindOfClass:NSString.class] || className.length == 0) return NO;
     // Deliberately narrow: only classes the dump proves are paid slots. A broad
@@ -65,6 +75,14 @@ static BOOL (*gOriginalShowSDKAd)(id,SEL,long long,BOOL);
 static BOOL (*gOriginalShowMaterial)(id,SEL,BOOL);
 static BOOL (*gOriginalShowNormal)(id,SEL,id,long long);
 static void (*gOriginalRequestSplash)(id,SEL);
+static void (*gOriginalShowWindmillSplash)(id,SEL,BOOL);
+
+static void WDGAdsShowWindmillSplash(id self, SEL command, BOOL hot) {
+    // Evidence: the launch screenshot shows a WindMill template interstitial with
+    // the "广告" badge that never passes through WDBSplashManager.
+    if (gAdsEnabled) { ++gSplashBlocked; return; }
+    if (gOriginalShowWindmillSplash) gOriginalShowWindmillSplash(self, command, hot);
+}
 
 static BOOL WDGAdsShowSplash(id self, SEL command) {
     if (gAdsEnabled) { ++gSplashBlocked; return NO; }
@@ -129,6 +147,17 @@ void WDGAdsInstall(void) {
         } else ++gInstallFailures;
     } else ++gInstallFailures;
 
+    Class windmillSplash = NSClassFromString(@"WDWindmillSplashAdViewController");
+    if (windmillSplash) {
+        Method show = class_getClassMethod(windmillSplash, NSSelectorFromString(@"showWindmillSplashAdWithHotLaunch:"));
+        if (show && method_getNumberOfArguments(show) == 3 && WDGAdsArgumentIs(show, 2, 'B')) {
+            char encoding[256] = {0};
+            method_getReturnType(show, encoding, sizeof(encoding));
+            if (WDGAdsType(encoding)[0] == 'v') gOriginalShowWindmillSplash = (void (*)(id,SEL,BOOL))method_setImplementation(show, (IMP)WDGAdsShowWindmillSplash);
+            else ++gInstallFailures;
+        } else ++gInstallFailures;
+    } else ++gInstallFailures;
+
     Class cards = NSClassFromString(@"WDBBaseCardManager");
     Method registerMethod = cards ? class_getInstanceMethod(cards, NSSelectorFromString(@"registerCard:withCardType:")) : NULL;
     if (registerMethod && method_getNumberOfArguments(registerMethod) == 4 &&
@@ -140,4 +169,8 @@ void WDGAdsInstall(void) {
     } else ++gInstallFailures;
 
     gAdsInstalled = YES;
+}
+// Runs when the dylib loads, before the App's own launch code can present an ad.
+__attribute__((constructor)) static void WDGAdsBootstrap(void) {
+    @autoreleasepool { WDGAdsInstall(); }
 }

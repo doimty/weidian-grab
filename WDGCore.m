@@ -4,6 +4,7 @@
 #import "WDGOrderService.h"
 #import "WDGCart.h"
 #import "WDGClock.h"
+#import "WDGAds.h"
 #import <fcntl.h>
 #import <unistd.h>
 #import <errno.h>
@@ -11,7 +12,7 @@
 #import <objc/message.h>
 
 NSString * const WDGStateDidChange = @"WDGStateDidChange";
-NSString * const WDGVersion = @"0.9.1";
+NSString * const WDGVersion = @"0.9.2";
 #ifndef WDG_BUILD_ID
 #define WDG_BUILD_ID "local-unbuilt"
 #endif
@@ -98,6 +99,8 @@ static NSDictionary *WDGCachedClockStatus(NSDictionary *sample) {
         if ([prior isKindOfClass:[NSDictionary class]]) {
             NSNumber *enabled=prior[@"captureEnabled"];
             if ([enabled isKindOfClass:NSNumber.class]) _captureEnabled=enabled.boolValue;
+            NSNumber *ads=prior[@"adsEnabled"];
+            if ([ads isKindOfClass:NSNumber.class]) WDGAdsSetEnabled(ads.boolValue);
             // Never resume a transaction after process restart: UI bindings are gone.
             NSDictionary *task=prior[@"task"];
             if ([task isKindOfClass:NSDictionary.class] && [@[@"armed",@"firing",@"preheating",@"waitingSale",@"sending",@"unknown"] containsObject:task[@"state"]]) {
@@ -107,6 +110,7 @@ static NSDictionary *WDGCachedClockStatus(NSDictionary *sample) {
                 _task[@"reason"]=sent?@"上次接口请求结果待核对，不自动重试":@"App 已重启，旧任务已取消";
             }
         }
+        WDGAdsInstall();
         NSNotificationCenter *nc=NSNotificationCenter.defaultCenter;
         [nc addObserver:self selector:@selector(willResign:) name:UIApplicationWillResignActiveNotification object:nil];
         [nc addObserver:self selector:@selector(clockChanged:) name:UIApplicationSignificantTimeChangeNotification object:nil];
@@ -122,7 +126,14 @@ static NSDictionary *WDGCachedClockStatus(NSDictionary *sample) {
     }
     return @{@"version":WDGVersion,@"build":WDGBuildID,@"captureEnabled":@(self.captureEnabled),
              @"snapshot":self.snapshot?:@{},@"task":[self.task copy],@"events":[self.recent copy],
-             @"firedCount":@(self.firedCount),@"ioError":self.ioError?:@"",@"storagePath":self.storagePath,@"receipt":self.lastReceipt?:@{},@"transport":[WDGOrderService diagnostics],@"cart":WDGCartDiagnostics(),@"clock":WDGCachedClockStatus(self.serverClock)};
+             @"firedCount":@(self.firedCount),@"ioError":self.ioError?:@"",@"storagePath":self.storagePath,@"receipt":self.lastReceipt?:@{},@"transport":[WDGOrderService diagnostics],@"cart":WDGCartDiagnostics(),@"clock":WDGCachedClockStatus(self.serverClock),@"ads":WDGAdsDiagnostics()};
+}
+- (void)setAdsEnabled:(BOOL)enabled {
+    if(![NSThread isMainThread]){dispatch_async(dispatch_get_main_queue(), ^{[self setAdsEnabled:enabled];});return;}
+    WDGAdsSetEnabled(enabled);
+    [self persist];
+    [self recordEvent:@"ads_toggle" details:@{@"result":enabled?@"on":@"off"}];
+    [NSNotificationCenter.defaultCenter postNotificationName:WDGStateDidChange object:self];
 }
 - (void)refreshServerClock {
     if(!NSThread.isMainThread){dispatch_async(dispatch_get_main_queue(), ^{[self refreshServerClock];});return;}
@@ -133,7 +144,7 @@ static NSDictionary *WDGCachedClockStatus(NSDictionary *sample) {
 - (void)persist {
     // Call only on the main queue. All persisted fields are our own metadata or
     // the adapter's product whitelist, never an NSURLRequest or raw model.
-    NSDictionary *payload=@{@"version":WDGVersion,@"build":WDGBuildID,@"captureEnabled":@(self.captureEnabled),@"snapshot":self.snapshot?:@{},@"task":[self.task copy]};
+    NSDictionary *payload=@{@"version":WDGVersion,@"build":WDGBuildID,@"captureEnabled":@(self.captureEnabled),@"adsEnabled":@(WDGAdsEnabled()),@"snapshot":self.snapshot?:@{},@"task":[self.task copy]};
     NSError *error=nil;
     NSData *json=[NSJSONSerialization dataWithJSONObject:payload options:NSJSONWritingPrettyPrinted error:&error];
     if (json && [json writeToFile:[self.storagePath stringByAppendingPathComponent:@"state.json"] options:NSDataWritingAtomic error:&error]) {

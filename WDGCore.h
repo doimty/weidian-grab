@@ -12,6 +12,9 @@ FOUNDATION_EXPORT NSString * const WDGBuildID;
 @property (nonatomic, readonly) NSDictionary *status;
 @property (nonatomic, readonly) NSString *storagePath;
 - (void)setCaptureEnabled:(BOOL)enabled;
+// Display-level ad suppression. Persisted; takes effect immediately because the
+// hooks check the flag at call time.
+- (void)setAdsEnabled:(BOOL)enabled;
 // Explicit passive read for the panel/new tasks; never sends a request or
 // changes an already armed deadline. Status itself does not read native state.
 - (void)refreshServerClock;

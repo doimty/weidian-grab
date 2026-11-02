@@ -12,7 +12,7 @@ INSTALL_TARGET_PROCESSES = WDBuyerUniv
 include $(THEOS)/makefiles/common.mk
 
 TWEAK_NAME = WeidianGrab
-WeidianGrab_FILES = Tweak.x WDGCore.m WDGPanel.m WDGTradeObserver.m WDGOrderService.m WDGCart.m WDGClock.m
+WeidianGrab_FILES = Tweak.x WDGCore.m WDGPanel.m WDGTradeObserver.m WDGOrderService.m WDGCart.m WDGClock.m WDGAds.m
 WeidianGrab_CFLAGS = -fobjc-arc
 WeidianGrab_FRAMEWORKS = Foundation UIKit
 WeidianGrab_LIBRARIES = substrate

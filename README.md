@@ -1,4 +1,4 @@
-# WeidianGrab 0.9.1
+# WeidianGrab 0.9.2
 
 微店买家版 7.9.62 / iOS15+ / RootHide。悬浮面板用于选择购物车目标、设定时间和最高实付金额；执行路径直接调用 App 原生网络 Service，不模拟点击，不调用订单页的提交按钮方法。
 
@@ -9,7 +9,20 @@
 3. 核对确认框后才设置任务。右上角“···”收纳本地参数校验、五秒演练、诊断导出，以及“并发：单路/双路竞速”。
 4. 到点前保持微店在前台。悬浮卡可收起，执行不依赖订单确认页。
 
-## 对时（0.9.1）
+## 去广告（0.9.2 · 新增）
+
+默认开启，可在“···”里随时关闭，开关会持久化。
+
+实现是**显示层屏蔽**：不删数据、不改账号、不拦截微店自己的业务请求。
+
+- 开屏：`WDBSplashManager` 的展示与物料拉取入口直接返回“不展示”，同时不再预下载开屏素材。
+- 首页付费卡片位：卡片注册时拒绝 `*CpcCard` / `*GoldenADCard` / `*SplashAdCard` 这类付费卡；未注册的类型渲染时得到空卡片并被跳过，不占位。
+
+依据来自解密样本的方法签名：`+showSplashIfNeeded` 返回 BOOL，`-registerCard:withCardType:` 参数为 Class 与 long long。所有 hook 都做 ABI 校验；类或选择器缺失时跳过并计入 `installFailures`，不会因版本差异崩溃。
+
+范围限制：WindMill / 穿山甲 / 广点通等 SDK 仍在进程内，本版只挡微店自己的展示与注册入口；IM 会话营销位和服务端运营位内容尚未覆盖。
+
+## 对时（0.9.2）
 
 这是**读取微店已有的时钟校准缓存**，不是新增联网校时接口、NTP 测量或网络 RTT 补偿。任务卡及“···”中可查看来源与状态。
 
@@ -78,8 +91,8 @@ clang -fobjc-arc -fblocks -Wall -Wextra -Werror -Wno-unused-parameter \
   -o /tmp/cart-preheat-mock
 /tmp/cart-preheat-mock
 make clean && make package THEOS_PACKAGE_SCHEME=roothide FINALPACKAGE=1
-python3 scripts/validate_deb.py packages/com.koudai.weidian.grab_0.9.1_iphoneos-arm64e.deb \
-  --version 0.9.1 --expected-sdk 16.4 --output manifest.json
+python3 scripts/validate_deb.py packages/com.koudai.weidian.grab_0.9.2_iphoneos-arm64e.deb \
+  --version 0.9.2 --expected-sdk 16.4 --output manifest.json
 ```
 
 固定 roothide/theos `88506b2c22e9e07dd4ed055f23c9e398a117a2c7`、arm64+arm64e、最低 iOS15。SDK归档名16.5，元数据实际16.4。CI先执行模拟/门控测试，再出精确包并核验依赖、filter、脚本与哈希；完整日志随产物保存。

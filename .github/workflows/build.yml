@@ -21,8 +21,8 @@ jobs:
       THEOS_PACKAGE_SCHEME: roothide
       FINALPACKAGE: '1'
       HOMEBREW_NO_AUTO_UPDATE: '1'
-      PACKAGE_VERSION: '0.9.1'
-      PACKAGE_DEB: packages/com.koudai.weidian.grab_0.9.1_iphoneos-arm64e.deb
+      PACKAGE_VERSION: '0.9.2'
+      PACKAGE_DEB: packages/com.koudai.weidian.grab_0.9.2_iphoneos-arm64e.deb
       # Same RootHide Theos revision as the working OKOK build.
       # Provenance: https://github.com/roothide/theos/commit/88506b2c22e9e07dd4ed055f23c9e398a117a2c7
       THEOS_COMMIT: 88506b2c22e9e07dd4ed055f23c9e398a117a2c7
@@ -196,6 +196,15 @@ jobs:
             2>&1 | tee clock-tests.log
           "$RUNNER_TEMP/weidian-clock-mock" 2>&1 | tee -a clock-tests.log
 
+      - name: Run ad suppression hook tests
+        run: |
+          set -euo pipefail
+          xcrun --sdk macosx clang -fobjc-arc -fblocks -Wall -Wextra -Werror \
+            -Wno-unused-parameter -framework Foundation \
+            Tests/ads_mock.m WDGAds.m -o "$RUNNER_TEMP/weidian-ads-mock" \
+            2>&1 | tee ads-tests.log
+          "$RUNNER_TEMP/weidian-ads-mock" 2>&1 | tee -a ads-tests.log
+
       - name: Clean and build exact package with full log
         run: |
           set -euo pipefail
@@ -218,13 +227,14 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: weidian-grab-roothide-0.9.1
+          name: weidian-grab-roothide-0.9.2
           path: |
-            packages/com.koudai.weidian.grab_0.9.1_iphoneos-arm64e.deb
+            packages/com.koudai.weidian.grab_0.9.2_iphoneos-arm64e.deb
             manifest.json
             toolchain.json
             build.log
             cart-preheat-tests.log
             clock-tests.log
+            ads-tests.log
             ${{ runner.temp }}/weidian-grab-state-tests.log
           if-no-files-found: error

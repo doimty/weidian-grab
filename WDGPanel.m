@@ -52,9 +52,9 @@ static NSDictionary *WDGSheetRow(NSString *label,NSString *value,BOOL mono) {ret
 @implementation WDGSheetController
 + (instancetype)sheetWithTitle:(NSString *)title rows:(NSArray<NSDictionary *> *)rows footnote:(NSString *)footnote warning:(BOOL)warning primaryTitle:(NSString *)primaryTitle primaryAction:(WDGSheetBlock)primaryAction secondaryTitle:(NSString *)secondaryTitle {
     WDGSheetController *sheet=[self new];
-    sheet.modalPresentationStyle=UIModalPresentationPageSheet;
     sheet.sheetTitle=title;sheet.sheetRows=rows;sheet.sheetFootnote=footnote;sheet.footnoteWarning=warning;
     sheet.primaryTitle=primaryTitle;sheet.primaryAction=primaryAction;sheet.secondaryTitle=secondaryTitle;
+    sheet.modalPresentationStyle=UIModalPresentationPageSheet;
     return sheet;
 }
 - (void)viewDidLoad {
@@ -172,8 +172,8 @@ static const CGFloat kWDGMenuCheckSide=16;
 @implementation WDGMenuSheetController
 + (instancetype)menuWithTitle:(NSString *)title subtitle:(NSString *)subtitle items:(NSArray<WDGMenuItem *> *)items {
     WDGMenuSheetController *menu=[self new];
-    menu.modalPresentationStyle=UIModalPresentationPageSheet;
     menu.menuTitle=title;menu.menuSubtitle=subtitle;menu.menuItems=[items copy];
+    menu.modalPresentationStyle=UIModalPresentationPageSheet;
     return menu;
 }
 - (void)viewDidLoad {
@@ -188,6 +188,7 @@ static const CGFloat kWDGMenuCheckSide=16;
         [cancelBar.leadingAnchor constraintEqualToAnchor:self.view.leadingAnchor],
         [cancelBar.trailingAnchor constraintEqualToAnchor:self.view.trailingAnchor],
         [cancelBar.bottomAnchor constraintEqualToAnchor:safe.bottomAnchor],
+        [cancelBar.heightAnchor constraintEqualToConstant:kWDGHairlineHeight+kWDGMenuRowHeight],
         [cancelLine.leadingAnchor constraintEqualToAnchor:cancelBar.leadingAnchor],
         [cancelLine.trailingAnchor constraintEqualToAnchor:cancelBar.trailingAnchor],
         [cancelLine.topAnchor constraintEqualToAnchor:cancelBar.topAnchor],

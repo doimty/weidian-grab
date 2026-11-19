@@ -297,7 +297,7 @@ static const CGFloat kWDGMenuCancelGap=8;
 @interface WDGPanel : NSObject
 @property(nonatomic,strong) WDGPassWindow *window;
 @property(nonatomic,weak) UIWindow *previousKey;
-@property(nonatomic,strong) UIButton *bubble;
+@property(nonatomic,strong) UIView *bubble;
 @property(nonatomic,strong) UIControl *scrim;
 @property(nonatomic,strong) UIView *card;
 @property(nonatomic,strong) UILabel *productLabel;
@@ -431,18 +431,32 @@ static const CGFloat kWDGMenuCancelGap=8;
     WDGPassWindow *w=scene?[[WDGPassWindow alloc] initWithWindowScene:scene]:[[WDGPassWindow alloc] initWithFrame:UIScreen.mainScreen.bounds];
     w.frame=UIScreen.mainScreen.bounds;w.backgroundColor=UIColor.clearColor;w.windowLevel=UIWindowLevelAlert+2;
     UIViewController *root=[UIViewController new];root.view.backgroundColor=UIColor.clearColor;w.rootViewController=root;self.window=w;
-    UIButton *b=[UIButton buttonWithType:UIButtonTypeSystem];self.bubble=b;
-    b.frame=CGRectMake(w.bounds.size.width-60,MAX(130,w.bounds.size.height*0.30),46,46);b.layer.cornerRadius=23;
-    b.backgroundColor=UIColor.clearColor;b.layer.shadowColor=UIColor.blackColor.CGColor;b.layer.shadowOpacity=0.18;b.layer.shadowRadius=7;b.layer.shadowOffset=CGSizeMake(0,3);
+    // Bubble is a plain container, not a UIButton carrying the icon: a
+    // UIButton manages its own imageView ordering, so glass inserted into
+    // the button ends up covering the bag instead of sitting behind it
+    // (0.9.19 regression: pale pink disc, no icon). Glass at the back,
+    // a separate UIImageView on top, and a clear button on top of that
+    // for taps. Container also opts out of alert-window tint dimming,
+    // which the old white icon survived but the red icon does not.
+    UIView *bubbleView=[UIView new];self.bubble=bubbleView;
+    bubbleView.frame=CGRectMake(w.bounds.size.width-60,MAX(130,w.bounds.size.height*0.30),46,46);
+    bubbleView.layer.cornerRadius=23;bubbleView.layer.cornerCurve=kCACornerCurveContinuous;
+    bubbleView.layer.shadowColor=UIColor.blackColor.CGColor;bubbleView.layer.shadowOpacity=0.18;bubbleView.layer.shadowRadius=7;bubbleView.layer.shadowOffset=CGSizeMake(0,3);
+    bubbleView.tintAdjustmentMode=UIViewTintAdjustmentModeNormal;
     UIVisualEffectView *bubbleGlass=WDGMakeGlass(23);
-    bubbleGlass.translatesAutoresizingMaskIntoConstraints=YES;bubbleGlass.frame=b.bounds;
+    bubbleGlass.translatesAutoresizingMaskIntoConstraints=YES;bubbleGlass.frame=bubbleView.bounds;
     bubbleGlass.autoresizingMask=UIViewAutoresizingFlexibleWidth|UIViewAutoresizingFlexibleHeight;bubbleGlass.userInteractionEnabled=NO;
-    [b insertSubview:bubbleGlass atIndex:0];
-    [b setImage:[UIImage systemImageNamed:@"bag.fill"] forState:UIControlStateNormal];b.tintColor=[self accent];
+    [bubbleView addSubview:bubbleGlass];
+    UIImageView *bag=[[UIImageView alloc] initWithImage:[UIImage systemImageNamed:@"bag.fill"]];
+    bag.tintColor=[self accent];bag.tintAdjustmentMode=UIViewTintAdjustmentModeNormal;bag.contentMode=UIViewContentModeScaleAspectFit;bag.translatesAutoresizingMaskIntoConstraints=NO;bag.userInteractionEnabled=NO;
+    [bubbleView addSubview:bag];
+    [NSLayoutConstraint activateConstraints:@[[bag.centerXAnchor constraintEqualToAnchor:bubbleView.centerXAnchor],[bag.centerYAnchor constraintEqualToAnchor:bubbleView.centerYAnchor],[bag.widthAnchor constraintEqualToConstant:24],[bag.heightAnchor constraintEqualToConstant:24]]];
+    UIButton *b=[UIButton buttonWithType:UIButtonTypeCustom];b.frame=bubbleView.bounds;b.autoresizingMask=UIViewAutoresizingFlexibleWidth|UIViewAutoresizingFlexibleHeight;b.backgroundColor=UIColor.clearColor;
     b.accessibilityLabel=@"微店助手，打开面板";b.accessibilityIdentifier=@"WDG.FloatingButton";
     [b addTarget:self action:@selector(togglePanel) forControlEvents:UIControlEventTouchUpInside];
     [b addGestureRecognizer:[[UIPanGestureRecognizer alloc] initWithTarget:self action:@selector(drag:)]];
-    [root.view addSubview:b];w.hidden=NO;
+    [bubbleView addSubview:b];
+    [root.view addSubview:bubbleView];w.hidden=NO;
     [WDGCore.shared recordEvent:@"overlay_ready" details:@{@"version":WDGVersion,@"build":WDGBuildID}];
 }
 - (void)drag:(UIPanGestureRecognizer *)g {

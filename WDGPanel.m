@@ -748,7 +748,7 @@ static const CGFloat kWDGMenuCancelGap=8;
     chevron.tintColor=UIColor.tertiaryLabelColor;chevron.translatesAutoresizingMaskIntoConstraints=NO;chevron.userInteractionEnabled=NO;
     [row addSubview:chevron];
     [NSLayoutConstraint activateConstraints:@[
-        [chevron.trailingAnchor constraintEqualToAnchor:row.trailingAnchor],
+        [chevron.trailingAnchor constraintEqualToAnchor:row.trailingAnchor constant:-12],
         [chevron.centerYAnchor constraintEqualToAnchor:row.centerYAnchor]]];
     return row;
 }
@@ -765,10 +765,10 @@ static const CGFloat kWDGMenuCancelGap=8;
     [toggle addTarget:toggle action:@selector(fireToggle) forControlEvents:UIControlEventValueChanged];
     [row addSubview:label];[row addSubview:toggle];
     [NSLayoutConstraint activateConstraints:@[
-        [label.leadingAnchor constraintEqualToAnchor:row.leadingAnchor],
+        [label.leadingAnchor constraintEqualToAnchor:row.leadingAnchor constant:16],
         [label.centerYAnchor constraintEqualToAnchor:row.centerYAnchor],
         [label.trailingAnchor constraintLessThanOrEqualToAnchor:toggle.leadingAnchor constant:-10],
-        [toggle.trailingAnchor constraintEqualToAnchor:row.trailingAnchor],
+        [toggle.trailingAnchor constraintEqualToAnchor:row.trailingAnchor constant:-12],
         [toggle.centerYAnchor constraintEqualToAnchor:row.centerYAnchor],
         [row.heightAnchor constraintGreaterThanOrEqualToConstant:kWDGMenuRowHeight]]];
     [row addTarget:self action:@selector(tapSwitchRow:) forControlEvents:UIControlEventTouchUpInside];
@@ -790,7 +790,7 @@ static const CGFloat kWDGMenuCancelGap=8;
     label.font=[UIFont systemFontOfSize:15 weight:UIFontWeightRegular];label.textColor=color;label.text=title;
     label.numberOfLines=2;label.lineBreakMode=NSLineBreakByTruncatingTail;[row addSubview:label];
     NSMutableArray<NSLayoutConstraint *> *rules=[NSMutableArray arrayWithObjects:
-        [label.leadingAnchor constraintEqualToAnchor:row.leadingAnchor],
+        [label.leadingAnchor constraintEqualToAnchor:row.leadingAnchor constant:16],
         [label.centerYAnchor constraintEqualToAnchor:row.centerYAnchor],
         [label.topAnchor constraintGreaterThanOrEqualToAnchor:row.topAnchor constant:6],
         [label.bottomAnchor constraintLessThanOrEqualToAnchor:row.bottomAnchor constant:-6],
@@ -800,7 +800,7 @@ static const CGFloat kWDGMenuCancelGap=8;
         UIImageSymbolConfiguration *config=[UIImageSymbolConfiguration configurationWithPointSize:15 weight:UIImageSymbolWeightSemibold];
         UIImageView *check=[[UIImageView alloc] initWithImage:[UIImage systemImageNamed:@"checkmark" withConfiguration:config]];
         check.tintColor=WDGSheetAccent();check.contentMode=UIViewContentModeScaleAspectFit;check.translatesAutoresizingMaskIntoConstraints=NO;check.userInteractionEnabled=NO;[row addSubview:check];
-        [rules addObjectsFromArray:@[[check.trailingAnchor constraintEqualToAnchor:row.trailingAnchor],[check.centerYAnchor constraintEqualToAnchor:row.centerYAnchor],[check.widthAnchor constraintEqualToConstant:kWDGMenuCheckSide],[check.heightAnchor constraintEqualToConstant:kWDGMenuCheckSide]]];
+        [rules addObjectsFromArray:@[[check.trailingAnchor constraintEqualToAnchor:row.trailingAnchor constant:-12],[check.centerYAnchor constraintEqualToAnchor:row.centerYAnchor],[check.widthAnchor constraintEqualToConstant:kWDGMenuCheckSide],[check.heightAnchor constraintEqualToConstant:kWDGMenuCheckSide]]];
         right=check;
     }
     if(right)[rules addObject:[label.trailingAnchor constraintLessThanOrEqualToAnchor:right.leadingAnchor constant:-10]];
@@ -828,12 +828,12 @@ static const CGFloat kWDGMenuCancelGap=8;
     UIView *cancelLine=[UIView new];cancelLine.translatesAutoresizingMaskIntoConstraints=NO;cancelLine.userInteractionEnabled=NO;
     cancelLine.backgroundColor=UIColor.separatorColor;[cancelBar addSubview:cancelLine];
     WDGRowControl *cancelRow=[self menuRowWithTitle:@"取消" color:UIColor.secondaryLabelColor checked:NO tag:-1];
-    for(UIView *view in cancelRow.subviews) if([view isKindOfClass:UILabel.class]){UILabel *label=(UILabel *)view;label.textAlignment=NSTextAlignmentCenter;[label.trailingAnchor constraintEqualToAnchor:cancelRow.trailingAnchor].active=YES;break;}
+    for(UIView *view in cancelRow.subviews) if([view isKindOfClass:UILabel.class]){UILabel *label=(UILabel *)view;label.textAlignment=NSTextAlignmentCenter;[label.trailingAnchor constraintEqualToAnchor:cancelRow.trailingAnchor constant:-16].active=YES;break;}
     [cancelBar addSubview:cancelRow];
     NSLayoutConstraint *fitsContent=[scroll.heightAnchor constraintEqualToAnchor:scroll.contentLayoutGuide.heightAnchor];fitsContent.priority=UILayoutPriorityDefaultHigh;
     [NSLayoutConstraint activateConstraints:@[
-        [scroll.leadingAnchor constraintEqualToAnchor:card.leadingAnchor constant:kWDGPadding],
-        [scroll.trailingAnchor constraintEqualToAnchor:card.trailingAnchor constant:-kWDGPadding],
+        [scroll.leadingAnchor constraintEqualToAnchor:card.leadingAnchor],
+        [scroll.trailingAnchor constraintEqualToAnchor:card.trailingAnchor],
         [scroll.topAnchor constraintEqualToAnchor:card.topAnchor constant:kWDGPadding],
         [scroll.bottomAnchor constraintEqualToAnchor:cancelBar.topAnchor constant:-kWDGMenuCancelGap],
         [cancelBar.leadingAnchor constraintEqualToAnchor:card.leadingAnchor],
@@ -844,8 +844,8 @@ static const CGFloat kWDGMenuCancelGap=8;
         [cancelLine.trailingAnchor constraintEqualToAnchor:cancelBar.trailingAnchor],
         [cancelLine.topAnchor constraintEqualToAnchor:cancelBar.topAnchor],
         [cancelLine.heightAnchor constraintEqualToConstant:kWDGHairlineHeight],
-        [cancelRow.leadingAnchor constraintEqualToAnchor:cancelBar.leadingAnchor constant:kWDGPadding],
-        [cancelRow.trailingAnchor constraintEqualToAnchor:cancelBar.trailingAnchor constant:-kWDGPadding],
+        [cancelRow.leadingAnchor constraintEqualToAnchor:cancelBar.leadingAnchor constant:16],
+        [cancelRow.trailingAnchor constraintEqualToAnchor:cancelBar.trailingAnchor constant:-16],
         [cancelRow.topAnchor constraintEqualToAnchor:cancelLine.bottomAnchor constant:kWDGMenuCancelGap],
         [cancelRow.bottomAnchor constraintEqualToAnchor:cancelBar.bottomAnchor constant:-10],
         fitsContent]];

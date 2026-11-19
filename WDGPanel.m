@@ -31,11 +31,14 @@ static const CGFloat kWDGOverlayVerticalBias=0.92;
 // needs iOS 26, so on the iOS 15 target the frosted material is the closest
 // native match. No layer border: the material + shadow define the edge, and a
 // border color would snapshot and stop following light/dark traits.
-static UIVisualEffectView *WDGMakeGlass(CGFloat radius) {
-    UIVisualEffectView *v=[[UIVisualEffectView alloc] initWithEffect:[UIBlurEffect effectWithStyle:UIBlurEffectStyleSystemMaterial]];
+static UIVisualEffectView *WDGMakeGlassWithStyle(CGFloat radius, UIBlurEffectStyle style) {
+    UIVisualEffectView *v=[[UIVisualEffectView alloc] initWithEffect:[UIBlurEffect effectWithStyle:style]];
     v.translatesAutoresizingMaskIntoConstraints=NO;
     v.layer.cornerRadius=radius;v.layer.cornerCurve=kCACornerCurveContinuous;v.clipsToBounds=YES;
     return v;
+}
+static UIVisualEffectView *WDGMakeGlass(CGFloat radius) {
+    return WDGMakeGlassWithStyle(radius, UIBlurEffectStyleSystemMaterial);
 }
 
 @interface WDGPassWindow : UIWindow @end
@@ -265,7 +268,7 @@ static const CGFloat kWDGMenuCancelGap=8;
 - (void)layoutSubviews {
     [super layoutSubviews];
     self.tintAdjustmentMode=UIViewTintAdjustmentModeNormal;
-    UIColor *accent=[UIColor colorWithRed:0.90 green:0.14 blue:0.30 alpha:1.0];
+    UIColor *accent=WDGSheetAccent();
     if(![self.onTintColor isEqual:accent]) self.onTintColor=accent;
 }
 @end
@@ -327,6 +330,8 @@ static const CGFloat kWDGMenuCancelGap=8;
 - (void)presentMenuWithTitle:(NSString *)title subtitle:(NSString *)subtitle items:(NSArray<WDGMenuItem *> *)items;
 - (void)dismissOverlayWithAction:(WDGSheetBlock)action;
 - (void)removeOverlayImmediately;
+- (void)closePanelImmediately;
+- (void)closePanelAnimated:(BOOL)animated;
 - (void)scheduleDetailOnce;
 @end
 @implementation WDGPanel
@@ -341,7 +346,7 @@ static const CGFloat kWDGMenuCancelGap=8;
     }
     return self;
 }
-- (UIColor *)accent {return [UIColor colorWithRed:0.90 green:0.14 blue:0.30 alpha:1];}
+- (UIColor *)accent {return WDGSheetAccent();}
 - (UILabel *)label:(CGFloat)size weight:(UIFontWeight)weight {
     UILabel *l=[UILabel new];l.font=[UIFont systemFontOfSize:size weight:weight];l.textColor=UIColor.labelColor;l.numberOfLines=0;l.translatesAutoresizingMaskIntoConstraints=NO;return l;
 }
@@ -421,7 +426,7 @@ static const CGFloat kWDGMenuCancelGap=8;
     [NSLayoutConstraint activateConstraints:rules];return row;
 }
 - (void)becameActive:(NSNotification *)n {[self ensureWindow];}
-- (void)enteredBackground:(NSNotification *)n {[self closePanel];self.window.hidden=YES;}
+- (void)enteredBackground:(NSNotification *)n {[self closePanelImmediately];self.window.hidden=YES;}
 - (void)stateChanged:(NSNotification *)n {[self refresh];}
 - (void)ensureWindow {
     if(UIApplication.sharedApplication.applicationState!=UIApplicationStateActive)return;
@@ -443,7 +448,11 @@ static const CGFloat kWDGMenuCancelGap=8;
     bubbleView.layer.cornerRadius=23;bubbleView.layer.cornerCurve=kCACornerCurveContinuous;
     bubbleView.layer.shadowColor=UIColor.blackColor.CGColor;bubbleView.layer.shadowOpacity=0.18;bubbleView.layer.shadowRadius=7;bubbleView.layer.shadowOffset=CGSizeMake(0,3);
     bubbleView.tintAdjustmentMode=UIViewTintAdjustmentModeNormal;
-    UIVisualEffectView *bubbleGlass=WDGMakeGlass(23);
+    // Thin material for the 46pt bubble only: SystemMaterial reads as a solid
+    // frosted disc at this size, while Thin lets the page show through.
+    // Cards keep SystemMaterial. Only valid if the overlay window's blur
+    // really samples the page behind it (confirmed on device 2026-11-19).
+    UIVisualEffectView *bubbleGlass=WDGMakeGlassWithStyle(23, UIBlurEffectStyleSystemThinMaterial);
     bubbleGlass.translatesAutoresizingMaskIntoConstraints=YES;bubbleGlass.frame=bubbleView.bounds;
     bubbleGlass.autoresizingMask=UIViewAutoresizingFlexibleWidth|UIViewAutoresizingFlexibleHeight;bubbleGlass.userInteractionEnabled=NO;
     [bubbleView addSubview:bubbleGlass];
@@ -486,7 +495,23 @@ static const CGFloat kWDGMenuCancelGap=8;
     [self.refreshTimer invalidate];self.refreshTimer=[NSTimer timerWithTimeInterval:0.25 target:self selector:@selector(refresh) userInfo:nil repeats:YES];
     [NSRunLoop.mainRunLoop addTimer:self.refreshTimer forMode:NSRunLoopCommonModes];[self refresh];
 }
-- (void)closePanel {
+- (void)closePanel {[self closePanelAnimated:YES];}
+- (void)closePanelAnimated:(BOOL)animated {
+    if(!animated||self.card.hidden){[self closePanelImmediately];return;}
+    // User-triggered close gets an exit animation (open is a spring pop;
+    // a hard cut on close reads as a glitch). Backgrounding keeps the
+    // instant path: an animation cut off mid-flight could leave the card
+    // visible on return. The teardown is idempotent, so a second close
+    // tap mid-animation is harmless.
+    [self.card.layer removeAllAnimations];
+    [UIView animateWithDuration:0.20 delay:0 options:UIViewAnimationOptionCurveEaseOut animations:^{
+        self.card.alpha=0;self.scrim.alpha=0;self.card.transform=CGAffineTransformMakeScale(0.97,0.97);
+    } completion:^(BOOL finished){
+        [self closePanelImmediately];
+        self.card.transform=CGAffineTransformIdentity;self.card.alpha=1;self.scrim.alpha=1;
+    }];
+}
+- (void)closePanelImmediately {
     [self removeOverlayImmediately];
     [self.card endEditing:YES];
     if(self.dateBeforeEditing){self.datePicker.date=self.dateBeforeEditing;self.dateBeforeEditing=nil;}
@@ -499,7 +524,7 @@ static const CGFloat kWDGMenuCancelGap=8;
     self.scrim=[UIControl new];self.scrim.backgroundColor=[UIColor colorWithWhite:0 alpha:0.22];self.scrim.translatesAutoresizingMaskIntoConstraints=NO;self.scrim.accessibilityLabel=@"收起任务面板";self.scrim.accessibilityIdentifier=@"WDG.PanelScrim";
     [self.scrim addTarget:self action:@selector(closePanel) forControlEvents:UIControlEventTouchUpInside];[root addSubview:self.scrim];
     [NSLayoutConstraint activateConstraints:@[[self.scrim.leadingAnchor constraintEqualToAnchor:root.leadingAnchor],[self.scrim.trailingAnchor constraintEqualToAnchor:root.trailingAnchor],[self.scrim.topAnchor constraintEqualToAnchor:root.topAnchor],[self.scrim.bottomAnchor constraintEqualToAnchor:root.bottomAnchor]]];
-    self.card=[UIView new];self.card.backgroundColor=UIColor.clearColor;self.card.layer.cornerRadius=kWDGCardRadius;self.card.layer.cornerCurve=kCACornerCurveContinuous;
+    self.card=[UIView new];self.card.backgroundColor=UIColor.clearColor;self.card.tintAdjustmentMode=UIViewTintAdjustmentModeNormal;self.card.layer.cornerRadius=kWDGCardRadius;self.card.layer.cornerCurve=kCACornerCurveContinuous;
     self.card.layer.shadowColor=UIColor.blackColor.CGColor;self.card.layer.shadowOpacity=0.10;self.card.layer.shadowRadius=26;self.card.layer.shadowOffset=CGSizeMake(0,12);
     self.card.translatesAutoresizingMaskIntoConstraints=NO;[root addSubview:self.card];
     UIVisualEffectView *cardGlass=WDGMakeGlass(kWDGCardRadius);[self.card addSubview:cardGlass];
@@ -620,7 +645,12 @@ static const CGFloat kWDGMenuCancelGap=8;
     [cancel.heightAnchor constraintEqualToConstant:40].active=YES;
     [cancel addTarget:self action:@selector(cancelTimePicker) forControlEvents:UIControlEventTouchUpInside];[stack addArrangedSubview:cancel];
     [self.window.rootViewController.view layoutIfNeeded];
-    [overlay presentWithCompletion:nil];
+    // The panel card stays visible while the overlay fades in (dimmed by the
+    // overlay scrim) and hides only once the overlay is up: hiding it in
+    // beginOverlay leaves a beat of bare dimmed background. Guarded: if the
+    // overlay is already being dismissed or removed, the card stays put.
+    __weak WDGPanel *weakSelf=self;
+    [overlay presentWithCompletion:^{WDGPanel *panel=weakSelf;if(panel&&panel.overlay==overlay&&!panel.overlayBusy)panel.card.hidden=YES;}];
 }
 - (void)cancelTimePicker {
     if(!self.overlay||self.overlayBusy)return;
@@ -682,7 +712,9 @@ static const CGFloat kWDGMenuCancelGap=8;
     self.overlay=overlay;self.overlayBusy=NO;self.menuItems=nil;self.activeSheet=nil;
     // Hide the panel card while a modal overlay is up: leaving the red primary
     // button visible under the scrim reads as a second, clipped button.
-    self.card.hidden=YES;
+    // The panel scrim hides too: the overlay has its own scrim, and two
+    // full-screen scrims stack to ~47% black instead of one even dim.
+    self.card.hidden=YES;self.scrim.hidden=YES;
     __weak WDGPanel *weakSelf=self;
     overlay.scrimAction=^{WDGPanel *panel=weakSelf;if(panel)[panel dismissOverlayWithAction:nil];};
     [root layoutIfNeeded];
@@ -830,7 +862,8 @@ static const CGFloat kWDGMenuCancelGap=8;
     self.menuItems=[items copy];
     [self installMenuTitle:title subtitle:subtitle items:items inCard:overlay.card];
     [self.window.rootViewController.view layoutIfNeeded];
-    [overlay presentWithCompletion:nil];
+    __weak WDGPanel *weakSelf=self;
+    [overlay presentWithCompletion:^{WDGPanel *panel=weakSelf;if(panel&&panel.overlay==overlay&&!panel.overlayBusy)panel.card.hidden=YES;}];
 }
 - (void)presentSheet:(WDGSheetController *)sheet {
     if(!sheet)return;
@@ -846,25 +879,31 @@ static const CGFloat kWDGMenuCancelGap=8;
         [content.topAnchor constraintEqualToAnchor:overlay.card.topAnchor],
         [content.bottomAnchor constraintEqualToAnchor:overlay.card.bottomAnchor]]];
     [self.window.rootViewController.view layoutIfNeeded];
-    [overlay presentWithCompletion:nil];
+    [overlay presentWithCompletion:^{WDGPanel *panel=weakSelf;if(panel&&panel.overlay==overlay&&!panel.overlayBusy)panel.card.hidden=YES;}];
 }
 - (void)dismissOverlayWithAction:(WDGSheetBlock)action {
     if(!self.overlay||self.overlayBusy)return;
     WDGOverlayView *overlay=self.overlay;
     self.overlayBusy=YES;
     if(self.activeSheet)self.activeSheet.dismissed=YES;
+    // Bring the panel card and scrim back in sync with the overlay fade-out
+    // instead of popping them in at the end: if the card was hidden, fade it
+    // (and the scrim) from 0 while the overlay fades to 0.
+    BOOL cardWasHidden=self.card.hidden;
+    self.card.hidden=NO;self.scrim.hidden=NO;
+    if(cardWasHidden){self.card.alpha=0;self.scrim.alpha=0;[UIView animateWithDuration:kWDGOverlayDuration delay:0 options:UIViewAnimationOptionCurveEaseOut animations:^{self.card.alpha=1;self.scrim.alpha=1;} completion:nil];}
     [overlay dismissWithCompletion:^{
         BOOL tornDown=overlay.tornDown;
         if(self.overlay==overlay)self.overlay=nil;
         self.overlayBusy=NO;self.activeSheet=nil;self.menuItems=nil;
-        self.card.hidden=NO;
+        self.card.hidden=NO;self.card.alpha=1;self.scrim.alpha=1;
         if(!tornDown&&action)action();
     }];
 }
 - (void)removeOverlayImmediately {
     WDGOverlayView *overlay=self.overlay;
     self.overlay=nil;self.overlayBusy=NO;self.activeSheet=nil;self.menuItems=nil;
-    self.card.hidden=NO;
+    self.card.hidden=NO;self.card.alpha=1;self.scrim.hidden=NO;self.scrim.alpha=1;
     [self.datePicker removeFromSuperview];
     [overlay removeImmediately];
 }
@@ -925,8 +964,10 @@ static const CGFloat kWDGMenuCancelGap=8;
     NSMutableDictionary *productRow=[WDGSheetRow(@"商品",[NSString stringWithFormat:@"%@ · %@ × %@%@",first[@"title"]?:@"商品",first[@"skuTitle"]?:@"未选规格",first[@"quantity"]?:@"?",items.count>1?[NSString stringWithFormat:@" · 共 %lu 条",(unsigned long)items.count]:@""],NO) mutableCopy];
     productRow[@"middle"]=@YES;
     NSString *footnote=lanes>1?[NSString stringWithFormat:@"可能重复下单：同商品最多 %lu 单，总扣款上限 ¥%@；单笔实付超过最高实付即停止提交。首个成功不会撤销其余已发请求",(unsigned long)lanes,[self formattedAmount:total]]:@"到点创建 1 次真实订单，实付超过最高实付即停止提交，不打开支付链接";
-    NSNumber *retryAttempts=WDGCore.shared.status[@"task"][@"retryAttempts"];
-    if([WDGCore.shared.status[@"retryEnabled"] boolValue]) footnote=[footnote stringByAppendingFormat:@"；明确未建单时最多重发 %lu 次，结果未知则不再重发",(unsigned long)(retryAttempts.unsignedIntegerValue?:3)];
+    NSNumber *retryAttempts=WDGCore.shared.status[@"retryAttempts"];
+    NSUInteger cfgAttempts=retryAttempts.unsignedIntegerValue?:3;
+    NSUInteger totalSends=lanes*WDGEffectiveRetryAttempts(lanes,cfgAttempts);
+    if([WDGCore.shared.status[@"retryEnabled"] boolValue]) footnote=[footnote stringByAppendingFormat:@"；明确未建单时最多发送 %lu 次，结果未知则不再重发",(unsigned long)totalSends];
     NSString *sheetTitle=lanes>1?[NSString stringWithFormat:@"确认 %lu 路竞速任务",(unsigned long)lanes]:@"确认这笔任务";
     NSString *primaryTitle=lanes>1?[NSString stringWithFormat:@"确认 %lu 路 · 接受最多%lu单",(unsigned long)lanes,(unsigned long)lanes]:@"确认单路 · 最多1单";
     WDGSheetController *sheet=[WDGSheetController sheetWithTitle:sheetTitle
@@ -982,7 +1023,9 @@ static const CGFloat kWDGMenuCancelGap=8;
     WDGMenuItem *detail=[WDGMenuItem itemWithTitle:@"详情页直提" checked:NO destructive:NO action:^{[self scheduleDetailOnce];}];
     detail.enabled=detailReady&&self.primaryButton.enabled;[items addObject:detail];
     BOOL retryOn=[WDGCore.shared.status[@"retryEnabled"] boolValue];
-    [items addObject:[WDGMenuItem switchItemWithTitle:@"循环重发（最多 3 次）" on:retryOn handler:^(BOOL on){[WDGCore.shared setRetryEnabled:on attempts:3];[self refresh];}]];
+    NSUInteger cfgAttempts=[WDGCore.shared.status[@"retryAttempts"] unsignedIntegerValue]?:3;
+    NSUInteger totalSends=self.concurrentLanes*WDGEffectiveRetryAttempts(self.concurrentLanes,cfgAttempts);
+    [items addObject:[WDGMenuItem switchItemWithTitle:[NSString stringWithFormat:@"循环重发（最多发送 %lu 次）",(unsigned long)totalSends] on:retryOn handler:^(BOOL on){[WDGCore.shared setRetryEnabled:on attempts:3];[self refresh];}]];
     BOOL adsOn=[WDGCore.shared.status[@"ads"][@"enabled"] boolValue];
     [items addObject:[WDGMenuItem switchItemWithTitle:@"去广告" on:adsOn handler:^(BOOL on){[WDGCore.shared setAdsEnabled:on];}]];
     [self presentMenuWithTitle:@"更多" subtitle:detailReady?nil:(detailReason?:@"详情页直提只在商品详情页可用") items:items];

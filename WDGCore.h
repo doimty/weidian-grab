@@ -38,6 +38,10 @@ FOUNDATION_EXPORT NSString * const WDGBuildID;
 // Bounded resend: applies to cart tasks only. The service stops on success or
 // on any unknown/timeout result; only definite business rejections resend.
 - (void)setRetryEnabled:(BOOL)enabled attempts:(NSUInteger)attempts;
+// Cap on total CreateOrder calls for one cart task: lanes x attempts never
+// exceeds 3, so the "at most N orders" promise on the confirm sheet holds
+// even if a retry is misclassified. Single lane keeps its configured attempts.
+FOUNDATION_EXPORT NSUInteger WDGEffectiveRetryAttempts(NSUInteger lanes, NSUInteger attempts);
 - (NSString * _Nullable)exportReport:(NSError **)error;
 @end
 

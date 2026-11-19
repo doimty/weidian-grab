@@ -533,7 +533,10 @@ static id WGSCloneConfirmation(id model) {
     }
     // Only a definite business rejection proves no order exists. A timeout or a
     // transport error stays unknown and must never trigger another Create.
-    if (!anySuccess && !anyUnknown && self.retryEnabled && self.attemptIndex+1<self.maxAttempts) {
+    // A timed-out aggregate never retries either: its models were released
+    // at timeout, so a retry would clone nil and emit a bogus second
+    // terminal. A late real result may still resolve the aggregate once.
+    if (!self.aggregateTimedOut && !anySuccess && !anyUnknown && self.retryEnabled && self.attemptIndex+1<self.maxAttempts) {
         self.attemptIndex++;
         [self.timeoutTimer invalidate];self.timeoutTimer=nil;
         [self progress:@"sending" message:[NSString stringWithFormat:@"前次明确未创建，%0.0f 毫秒后重发（第 %lu/%lu 次）",self.retryDelay*1000.0,(unsigned long)self.attemptIndex+1,(unsigned long)self.maxAttempts]];
@@ -600,8 +603,11 @@ static id WGSCloneConfirmation(id model) {
     [self.retryTimer invalidate];self.retryTimer=nil;
     [self releaseModels];
     [self emitAggregateTerminal:YES];
-    // In-flight native callbacks stay registered; a late real result may update
-    // the aggregate, but this task can never send another Create.
+    // In-flight native callbacks stay registered; one late real result may
+    // update the aggregate to a second, final receipt (unknown -> success),
+    // but the aggregate can never retry: the models are released, so a
+    // retry would clone nil and emit a bogus second terminal. See
+    // settleWave, which refuses to resend once aggregateTimedOut is set.
 }
 - (BOOL)cancelBeforeCreate {
     if (self.createStarted) return NO;

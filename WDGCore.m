@@ -34,6 +34,25 @@ static BOOL WDGClockOffsetsMatch(NSDictionary *a, NSDictionary *b) {
     NSNumber *rawB=[b[@"rawOffsetMs"] isKindOfClass:NSNumber.class]?b[@"rawOffsetMs"]:b[@"offsetMs"];
     return [rawA isEqualToNumber:rawB];
 }
+// Fire-time tolerance: the offset is a noisy network measurement, so a fresh
+// sample that moved <500ms still describes the same server instant closely
+// enough to fire. Exact equality passes too (0ms drift is within tolerance).
+// A stale/invalid sample or a large jump still cancels, via the converter.
+static BOOL WDGClockOffsetsWithin(NSDictionary *a, NSDictionary *b, double toleranceMs) {
+    if(WDGClockOffsetsMatch(a,b))return YES;
+    if(!WDGNativeClockMode(a)||!WDGNativeClockMode(b))return NO;
+    double dOff=fabs([a[@"offsetMs"] doubleValue]-[b[@"offsetMs"] doubleValue]);
+    NSNumber *rawA=[a[@"rawOffsetMs"] isKindOfClass:NSNumber.class]?a[@"rawOffsetMs"]:a[@"offsetMs"];
+    NSNumber *rawB=[b[@"rawOffsetMs"] isKindOfClass:NSNumber.class]?b[@"rawOffsetMs"]:b[@"offsetMs"];
+    return dOff<=toleranceMs&&fabs([rawA doubleValue]-[rawB doubleValue])<=toleranceMs;
+}
+// Total CreateOrder calls for one cart task never exceed 3: lanes x attempts
+// is capped, so a multi-lane race cannot multiply retries into more orders
+// than the confirm sheet promises. Single lane keeps its configured attempts.
+NSUInteger WDGEffectiveRetryAttempts(NSUInteger lanes, NSUInteger attempts) {
+    if(lanes<=1)return MAX(attempts,(NSUInteger)1);
+    return MIN(attempts,MAX(3/lanes,(NSUInteger)1));
+}
 // Age the cached observation without touching the native clock. The pure
 // converter also detects a wall/uptime discrepancy since the observation.
 static NSDictionary *WDGCachedClockStatus(NSDictionary *sample) {
@@ -438,7 +457,7 @@ id WDGVisibleDetailController(NSString **reason) {
     }
     return @{@"version":WDGVersion,@"build":WDGBuildID,@"captureEnabled":@(self.captureEnabled),
              @"snapshot":self.snapshot?:@{},@"task":[self.task copy],@"events":[self.recent copy],
-             @"firedCount":@(self.firedCount),@"ioError":self.ioError?:@"",@"storagePath":self.storagePath,@"receipt":self.lastReceipt?:@{},@"transport":[WDGOrderService diagnostics],@"cart":WDGCartDiagnostics(),@"clock":WDGCachedClockStatus(self.serverClock),@"ads":WDGAdsDiagnostics(),@"retryEnabled":@(self.cartRetryEnabled)};
+             @"firedCount":@(self.firedCount),@"ioError":self.ioError?:@"",@"storagePath":self.storagePath,@"receipt":self.lastReceipt?:@{},@"transport":[WDGOrderService diagnostics],@"cart":WDGCartDiagnostics(),@"clock":WDGCachedClockStatus(self.serverClock),@"ads":WDGAdsDiagnostics(),@"retryEnabled":@(self.cartRetryEnabled),@"retryAttempts":@(self.cartRetryAttempts?:1)};
 }
 - (void)setAdsEnabled:(BOOL)enabled {
     if(![NSThread isMainThread]){dispatch_async(dispatch_get_main_queue(), ^{[self setAdsEnabled:enabled];});return;}
@@ -535,7 +554,7 @@ id WDGVisibleDetailController(NSString **reason) {
         // Do not convert the Review observation: it may be >5s old by now.
         // Same raw offset + a valid fresh observation preserves exactly what
         // was displayed, without ever silently falling back to local time.
-        if(!WDGClockOffsetsMatch(review,fresh)||!(localDue=WDGLocalDeadlineFromClock(date,fresh,&reason))){
+        if(!WDGClockOffsetsWithin(review,fresh,500)||!(localDue=WDGLocalDeadlineFromClock(date,fresh,&reason))){
             if(error)*error=WGDError(31,[NSString stringWithFormat:@"%@；请重新打开确认页核对",reason?:@"微店时钟样本或时差已变化"]);return NO;
         }
         chosen=fresh;
@@ -601,6 +620,7 @@ id WDGVisibleDetailController(NSString **reason) {
         reason=@"公告时刻与本地执行时刻都须在未来 2 秒至 12 小时内，请重新确认时差和时间";
     if(reason){if(error)*error=WGDError(2,reason);return NO;}
     WDGOrderService *prepared=nil;
+    NSUInteger effectiveAttempts=WDGEffectiveRetryAttempts(self.cartLanes,self.cartRetryAttempts?:1);
     if([action isEqual:@"serviceOnce"]){
         prepared=WDGPrepareObservedInterface(sampleKey,payType,error);
         if(!prepared)return NO;
@@ -608,7 +628,7 @@ id WDGVisibleDetailController(NSString **reason) {
         prepared=[self preparePreheatWithPayType:nil error:error];
         if(!prepared||![prepared.sampleKey isEqual:sampleKey]||
            ![prepared configureConcurrentLanes:self.cartLanes error:error]||
-           ![prepared configureRetryEnabled:self.cartRetryEnabled attempts:(self.cartRetryAttempts?:1) error:error]||
+           ![prepared configureRetryEnabled:self.cartRetryEnabled attempts:effectiveAttempts error:error]||
            ![prepared configureCartDueAt:localDue maximumTotal:maximum error:error]){
             if(prepared&&![prepared.sampleKey isEqual:sampleKey]&&error)*error=WGDError(21,@"准备期间购物车目标已变化，请重新确认");
             return NO;
@@ -642,7 +662,7 @@ id WDGVisibleDetailController(NSString **reason) {
         NSDictionary *clock=self.cartClockSnapshot?:WDGCachedClockStatus(nil);BOOL native=WDGNativeClockMode(clock);
         self.task[@"warmupAt"]=@(fireAt);
         self.task[@"maximumTotal"]=maximum.stringValue;self.task[@"concurrentLanes"]=@(self.cartLanes);
-        self.task[@"retryEnabled"]=@(self.cartRetryEnabled);self.task[@"retryAttempts"]=@(self.cartRetryAttempts?:1);
+        self.task[@"retryEnabled"]=@(self.cartRetryEnabled);self.task[@"retryAttempts"]=@(effectiveAttempts);
         self.task[@"clockMode"]=native?@"native_recent":@"local";
         self.task[@"clockOffsetMs"]=native?clock[@"offsetMs"]:@0;
         self.task[@"clockSource"]=clock[@"source"]?:@"none";
@@ -696,7 +716,7 @@ id WDGVisibleDetailController(NSString **reason) {
     if(cartTask&&[self.task[@"clockMode"] isEqual:@"native_recent"]){
         NSDictionary *fresh=[WDGReadServerClock() copy];self.serverClock=fresh;
         NSDate *announced=[NSDate dateWithTimeIntervalSince1970:[self.task[@"announcedDueAt"] doubleValue]];
-        if(!WDGClockOffsetsMatch(self.task[@"clockSample"],fresh)||!WDGLocalDeadlineFromClock(announced,fresh,NULL)){
+        if(!WDGClockOffsetsWithin(self.task[@"clockSample"],fresh,500)||!WDGLocalDeadlineFromClock(announced,fresh,NULL)){
             [self cancelTask:@"微店时差已变化或有效样本已失效，任务已停止，请重新确认"];return;
         }
     }

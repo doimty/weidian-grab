@@ -18,12 +18,25 @@ static const CGFloat kWDGFooterHitHeight=44;
 static const CGFloat kWDGScrollFooterGap=12;
 static const CGFloat kWDGCardMaxWidth=376;
 static const CGFloat kWDGCardScreenMargin=32;
-static const CGFloat kWDGOverlayScrimAlpha=0.45;
+static const CGFloat kWDGOverlayScrimAlpha=0.32;
 static const CGFloat kWDGOverlayScale=0.98;
 static const CGFloat kWDGOverlayDuration=0.18;
+static const CGFloat kWDGOverlaySpringDuration=0.32;
+static const CGFloat kWDGCardSpringDuration=0.35;
 static const CGFloat kWDGOverlayMaxHeightRatio=0.70;
 static const CGFloat kWDGTimeCardMaxHeightRatio=0.88;
 static const CGFloat kWDGOverlayVerticalBias=0.92;
+
+// Liquid glass (iOS 15-compatible): systemMaterial blur. Real UIGlassEffect
+// needs iOS 26, so on the iOS 15 target the frosted material is the closest
+// native match. No layer border: the material + shadow define the edge, and a
+// border color would snapshot and stop following light/dark traits.
+static UIVisualEffectView *WDGMakeGlass(CGFloat radius) {
+    UIVisualEffectView *v=[[UIVisualEffectView alloc] initWithEffect:[UIBlurEffect effectWithStyle:UIBlurEffectStyleSystemMaterial]];
+    v.translatesAutoresizingMaskIntoConstraints=NO;
+    v.layer.cornerRadius=radius;v.layer.cornerCurve=kCACornerCurveContinuous;v.clipsToBounds=YES;
+    return v;
+}
 
 @interface WDGPassWindow : UIWindow @end
 @implementation WDGPassWindow
@@ -70,13 +83,20 @@ static NSDictionary *WDGSheetRow(NSString *label,NSString *value,BOOL mono) {ret
         [_scrim addTarget:self action:@selector(tapScrim) forControlEvents:UIControlEventTouchUpInside];
         [self addSubview:_scrim];
         _card=[UIView new];_card.translatesAutoresizingMaskIntoConstraints=NO;
-        _card.backgroundColor=UIColor.systemBackgroundColor;
+        _card.backgroundColor=UIColor.clearColor;
         // Keep controls vivid: an alert-level overlay window can be treated as
         // inactive, which desaturates switches and icons.
         _card.tintAdjustmentMode=UIViewTintAdjustmentModeNormal;
         _card.layer.cornerRadius=kWDGCardRadius;_card.layer.cornerCurve=kCACornerCurveContinuous;
         _card.layer.shadowColor=UIColor.blackColor.CGColor;_card.layer.shadowOpacity=0.08;
         _card.layer.shadowRadius=18;_card.layer.shadowOffset=CGSizeMake(0,8);
+        UIVisualEffectView *glass=WDGMakeGlass(kWDGCardRadius);
+        [_card addSubview:glass];
+        [NSLayoutConstraint activateConstraints:@[
+            [glass.leadingAnchor constraintEqualToAnchor:_card.leadingAnchor],
+            [glass.trailingAnchor constraintEqualToAnchor:_card.trailingAnchor],
+            [glass.topAnchor constraintEqualToAnchor:_card.topAnchor],
+            [glass.bottomAnchor constraintEqualToAnchor:_card.bottomAnchor]]];
         [self addSubview:_card];
         UILayoutGuide *centerGuide=[UILayoutGuide new];[self addLayoutGuide:centerGuide];
         [NSLayoutConstraint activateConstraints:@[
@@ -99,7 +119,7 @@ static NSDictionary *WDGSheetRow(NSString *label,NSString *value,BOOL mono) {ret
 - (void)presentWithCompletion:(void (^)(void))completion {
     self.userInteractionEnabled=NO;self.alpha=0;
     self.card.transform=CGAffineTransformMakeScale(kWDGOverlayScale,kWDGOverlayScale);
-    [UIView animateWithDuration:kWDGOverlayDuration delay:0 options:UIViewAnimationOptionCurveEaseOut animations:^{
+    [UIView animateWithDuration:kWDGOverlaySpringDuration delay:0 usingSpringWithDamping:0.82 initialSpringVelocity:0 options:0 animations:^{
         self.alpha=1;self.card.transform=CGAffineTransformIdentity;
     } completion:^(BOOL finished){self.userInteractionEnabled=YES;if(completion)completion();}];
 }
@@ -413,8 +433,12 @@ static const CGFloat kWDGMenuCancelGap=8;
     UIViewController *root=[UIViewController new];root.view.backgroundColor=UIColor.clearColor;w.rootViewController=root;self.window=w;
     UIButton *b=[UIButton buttonWithType:UIButtonTypeSystem];self.bubble=b;
     b.frame=CGRectMake(w.bounds.size.width-60,MAX(130,w.bounds.size.height*0.30),46,46);b.layer.cornerRadius=23;
-    b.backgroundColor=[self accent];b.layer.shadowColor=UIColor.blackColor.CGColor;b.layer.shadowOpacity=0.18;b.layer.shadowRadius=7;b.layer.shadowOffset=CGSizeMake(0,3);
-    [b setImage:[UIImage systemImageNamed:@"bag.fill"] forState:UIControlStateNormal];b.tintColor=UIColor.whiteColor;
+    b.backgroundColor=UIColor.clearColor;b.layer.shadowColor=UIColor.blackColor.CGColor;b.layer.shadowOpacity=0.18;b.layer.shadowRadius=7;b.layer.shadowOffset=CGSizeMake(0,3);
+    UIVisualEffectView *bubbleGlass=WDGMakeGlass(23);
+    bubbleGlass.translatesAutoresizingMaskIntoConstraints=YES;bubbleGlass.frame=b.bounds;
+    bubbleGlass.autoresizingMask=UIViewAutoresizingFlexibleWidth|UIViewAutoresizingFlexibleHeight;bubbleGlass.userInteractionEnabled=NO;
+    [b insertSubview:bubbleGlass atIndex:0];
+    [b setImage:[UIImage systemImageNamed:@"bag.fill"] forState:UIControlStateNormal];b.tintColor=[self accent];
     b.accessibilityLabel=@"微店助手，打开面板";b.accessibilityIdentifier=@"WDG.FloatingButton";
     [b addTarget:self action:@selector(togglePanel) forControlEvents:UIControlEventTouchUpInside];
     [b addGestureRecognizer:[[UIPanGestureRecognizer alloc] initWithTarget:self action:@selector(drag:)]];
@@ -435,6 +459,14 @@ static const CGFloat kWDGMenuCancelGap=8;
     if(!self.previousKey){id<UIApplicationDelegate> d=UIApplication.sharedApplication.delegate;if([d respondsToSelector:@selector(window)])self.previousKey=d.window;}
     if(!self.card)[self buildCard];
     self.scrim.hidden=NO;self.card.hidden=NO;self.bubble.hidden=YES;[self.window makeKeyWindow];
+    // Liquid entry: spring pop + scrim fade. Close stays instant on purpose:
+    // close also runs when the app backgrounds, where an animation would be
+    // cut off mid-flight and could leave the card visible on return.
+    [self.card.layer removeAllAnimations];
+    self.card.transform=CGAffineTransformMakeScale(0.96,0.96);self.card.alpha=0;self.scrim.alpha=0;
+    [UIView animateWithDuration:kWDGCardSpringDuration delay:0 usingSpringWithDamping:0.82 initialSpringVelocity:0 options:0 animations:^{
+        self.card.transform=CGAffineTransformIdentity;self.card.alpha=1;self.scrim.alpha=1;
+    } completion:nil];
     if(self.datePicker.date.timeIntervalSinceNow<2){self.datePicker.date=[NSDate dateWithTimeIntervalSinceNow:120];self.datePicker.date=[self selectedMinute];}
     [self updateTimeDisplay];
     [self.refreshTimer invalidate];self.refreshTimer=[NSTimer timerWithTimeInterval:0.25 target:self selector:@selector(refresh) userInfo:nil repeats:YES];
@@ -453,9 +485,15 @@ static const CGFloat kWDGMenuCancelGap=8;
     self.scrim=[UIControl new];self.scrim.backgroundColor=[UIColor colorWithWhite:0 alpha:0.22];self.scrim.translatesAutoresizingMaskIntoConstraints=NO;self.scrim.accessibilityLabel=@"收起任务面板";self.scrim.accessibilityIdentifier=@"WDG.PanelScrim";
     [self.scrim addTarget:self action:@selector(closePanel) forControlEvents:UIControlEventTouchUpInside];[root addSubview:self.scrim];
     [NSLayoutConstraint activateConstraints:@[[self.scrim.leadingAnchor constraintEqualToAnchor:root.leadingAnchor],[self.scrim.trailingAnchor constraintEqualToAnchor:root.trailingAnchor],[self.scrim.topAnchor constraintEqualToAnchor:root.topAnchor],[self.scrim.bottomAnchor constraintEqualToAnchor:root.bottomAnchor]]];
-    self.card=[UIView new];self.card.backgroundColor=UIColor.systemBackgroundColor;self.card.layer.cornerRadius=kWDGCardRadius;self.card.layer.cornerCurve=kCACornerCurveContinuous;
+    self.card=[UIView new];self.card.backgroundColor=UIColor.clearColor;self.card.layer.cornerRadius=kWDGCardRadius;self.card.layer.cornerCurve=kCACornerCurveContinuous;
     self.card.layer.shadowColor=UIColor.blackColor.CGColor;self.card.layer.shadowOpacity=0.10;self.card.layer.shadowRadius=26;self.card.layer.shadowOffset=CGSizeMake(0,12);
     self.card.translatesAutoresizingMaskIntoConstraints=NO;[root addSubview:self.card];
+    UIVisualEffectView *cardGlass=WDGMakeGlass(kWDGCardRadius);[self.card addSubview:cardGlass];
+    [NSLayoutConstraint activateConstraints:@[
+        [cardGlass.leadingAnchor constraintEqualToAnchor:self.card.leadingAnchor],
+        [cardGlass.trailingAnchor constraintEqualToAnchor:self.card.trailingAnchor],
+        [cardGlass.topAnchor constraintEqualToAnchor:self.card.topAnchor],
+        [cardGlass.bottomAnchor constraintEqualToAnchor:self.card.bottomAnchor]]];
     CGFloat width=MIN(kWDGCardMaxWidth,self.window.bounds.size.width-kWDGCardScreenMargin);
     [NSLayoutConstraint activateConstraints:@[[self.card.centerXAnchor constraintEqualToAnchor:root.centerXAnchor],[self.card.centerYAnchor constraintEqualToAnchor:root.centerYAnchor],[self.card.widthAnchor constraintEqualToConstant:width],[self.card.topAnchor constraintGreaterThanOrEqualToAnchor:root.topAnchor constant:16],[self.card.bottomAnchor constraintLessThanOrEqualToAnchor:root.bottomAnchor constant:-16]]];
     UIScrollView *scroll=[UIScrollView new];scroll.translatesAutoresizingMaskIntoConstraints=NO;scroll.showsVerticalScrollIndicator=NO;scroll.alwaysBounceVertical=NO;scroll.keyboardDismissMode=UIScrollViewKeyboardDismissModeInteractive;scroll.contentInsetAdjustmentBehavior=UIScrollViewContentInsetAdjustmentNever;[self.card addSubview:scroll];

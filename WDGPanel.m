@@ -19,8 +19,8 @@ static const CGFloat kWDGScrollFooterGap=12;
 static const CGFloat kWDGCardMaxWidth=376;
 static const CGFloat kWDGCardScreenMargin=32;
 static const CGFloat kWDGOverlayScrimAlpha=0.32;
-static const CGFloat kWDGOverlayScale=0.98;
-static const CGFloat kWDGOverlayDuration=0.18;
+static const CGFloat kWDGOverlayScale=0.96;
+static const CGFloat kWDGOverlayDuration=0.20;
 static const CGFloat kWDGOverlaySpringDuration=0.32;
 static const CGFloat kWDGCardSpringDuration=0.35;
 static const CGFloat kWDGOverlayMaxHeightRatio=0.70;
@@ -29,8 +29,11 @@ static const CGFloat kWDGOverlayVerticalBias=0.92;
 
 // Liquid glass (iOS 15-compatible): systemMaterial blur. Real UIGlassEffect
 // needs iOS 26, so on the iOS 15 target the frosted material is the closest
-// native match. No layer border: the material + shadow define the edge, and a
-// border color would snapshot and stop following light/dark traits.
+// native match. The card edge is a 1pt view (WDGEdgeView), not a layer
+// border: a border color would snapshot and stop following light/dark
+// traits, while a view background color follows them. In dark mode the
+// black shadow alone leaves the card edge invisible, so the edge view
+// carries the definition there.
 static UIVisualEffectView *WDGMakeGlassWithStyle(CGFloat radius, UIBlurEffectStyle style) {
     UIVisualEffectView *v=[[UIVisualEffectView alloc] initWithEffect:[UIBlurEffect effectWithStyle:style]];
     v.translatesAutoresizingMaskIntoConstraints=NO;
@@ -39,6 +42,13 @@ static UIVisualEffectView *WDGMakeGlassWithStyle(CGFloat radius, UIBlurEffectSty
 }
 static UIVisualEffectView *WDGMakeGlass(CGFloat radius) {
     return WDGMakeGlassWithStyle(radius, UIBlurEffectStyleSystemMaterial);
+}
+// 1pt trait-following edge for glass cards: a plain view 1pt larger than
+// the card, sitting behind the glass so only a hairline ring shows.
+static UIView *WDGEdgeView(CGFloat radius) {
+    UIView *v=[UIView new];v.backgroundColor=[[UIColor labelColor] colorWithAlphaComponent:0.10];
+    v.layer.cornerRadius=radius+1;v.layer.cornerCurve=kCACornerCurveContinuous;
+    v.translatesAutoresizingMaskIntoConstraints=NO;v.userInteractionEnabled=NO;return v;
 }
 
 @interface WDGPassWindow : UIWindow @end
@@ -91,8 +101,10 @@ static NSDictionary *WDGSheetRow(NSString *label,NSString *value,BOOL mono) {ret
         // inactive, which desaturates switches and icons.
         _card.tintAdjustmentMode=UIViewTintAdjustmentModeNormal;
         _card.layer.cornerRadius=kWDGCardRadius;_card.layer.cornerCurve=kCACornerCurveContinuous;
-        _card.layer.shadowColor=UIColor.blackColor.CGColor;_card.layer.shadowOpacity=0.08;
-        _card.layer.shadowRadius=18;_card.layer.shadowOffset=CGSizeMake(0,8);
+        _card.layer.shadowColor=UIColor.blackColor.CGColor;_card.layer.shadowOpacity=0.12;
+        _card.layer.shadowRadius=24;_card.layer.shadowOffset=CGSizeMake(0,10);
+        UIView *edge=WDGEdgeView(kWDGCardRadius);[_card addSubview:edge];
+        [NSLayoutConstraint activateConstraints:@[[edge.leadingAnchor constraintEqualToAnchor:_card.leadingAnchor constant:-1],[edge.trailingAnchor constraintEqualToAnchor:_card.trailingAnchor constant:1],[edge.topAnchor constraintEqualToAnchor:_card.topAnchor constant:-1],[edge.bottomAnchor constraintEqualToAnchor:_card.bottomAnchor constant:1]]];
         UIVisualEffectView *glass=WDGMakeGlass(kWDGCardRadius);
         [_card addSubview:glass];
         [NSLayoutConstraint activateConstraints:@[
@@ -222,7 +234,7 @@ static NSDictionary *WDGSheetRow(NSString *label,NSString *value,BOOL mono) {ret
 }
 - (UIView *)separatorLine {
     UIView *line=[UIView new];line.translatesAutoresizingMaskIntoConstraints=NO;line.userInteractionEnabled=NO;
-    line.backgroundColor=[UIColor.separatorColor colorWithAlphaComponent:0.5];
+    line.backgroundColor=UIColor.separatorColor;
     [line.heightAnchor constraintEqualToConstant:kWDGHairlineHeight].active=YES;return line;
 }
 - (UIView *)rowView:(NSDictionary *)row {
@@ -355,21 +367,20 @@ static const CGFloat kWDGMenuCancelGap=8;
     UIImageSymbolConfiguration *config=[UIImageSymbolConfiguration configurationWithPointSize:15 weight:UIImageSymbolWeightSemibold];
     [b setImage:[UIImage systemImageNamed:symbol withConfiguration:config] forState:UIControlStateNormal];b.tintColor=UIColor.secondaryLabelColor;
     b.accessibilityLabel=label;[b addTarget:self action:selector forControlEvents:UIControlEventTouchUpInside];
-    [b.widthAnchor constraintEqualToConstant:32].active=YES;[b.heightAnchor constraintEqualToConstant:32].active=YES;return b;
+    [b.widthAnchor constraintEqualToConstant:44].active=YES;[b.heightAnchor constraintEqualToConstant:44].active=YES;return b;
 }
 - (UIButton *)textLink:(NSString *)text action:(SEL)selector {
     UIButton *b=[UIButton buttonWithType:UIButtonTypeSystem];b.translatesAutoresizingMaskIntoConstraints=NO;
     b.backgroundColor=UIColor.clearColor;b.layer.borderWidth=0;b.tintColor=UIColor.secondaryLabelColor;
-    NSDictionary<NSAttributedStringKey,id> *attributes=@{NSFontAttributeName:[UIFont systemFontOfSize:11 weight:UIFontWeightRegular],
-        NSForegroundColorAttributeName:UIColor.secondaryLabelColor,
-        NSUnderlineStyleAttributeName:@(NSUnderlineStyleSingle)};
+    NSDictionary<NSAttributedStringKey,id> *attributes=@{NSFontAttributeName:[UIFont systemFontOfSize:12 weight:UIFontWeightRegular],
+        NSForegroundColorAttributeName:UIColor.secondaryLabelColor};
     [b setAttributedTitle:[[NSAttributedString alloc] initWithString:text attributes:attributes] forState:UIControlStateNormal];
     b.accessibilityLabel=text;[b addTarget:self action:selector forControlEvents:UIControlEventTouchUpInside];
     return b;
 }
 - (UIView *)hairline {
     UIView *line=[UIView new];line.translatesAutoresizingMaskIntoConstraints=NO;line.userInteractionEnabled=NO;
-    line.backgroundColor=[UIColor.separatorColor colorWithAlphaComponent:0.5];
+    line.backgroundColor=UIColor.separatorColor;
     [line.heightAnchor constraintEqualToConstant:kWDGHairlineHeight].active=YES;return line;
 }
 - (UILabel *)rowTitle:(NSString *)text {
@@ -444,7 +455,8 @@ static const CGFloat kWDGMenuCancelGap=8;
     // for taps. Container also opts out of alert-window tint dimming,
     // which the old white icon survived but the red icon does not.
     UIView *bubbleView=[UIView new];self.bubble=bubbleView;
-    bubbleView.frame=CGRectMake(w.bounds.size.width-60,MAX(130,w.bounds.size.height*0.30),46,46);
+    bubbleView.frame=CGRectMake(w.bounds.size.width-49,MAX(130,w.bounds.size.height*0.30),46,46);
+    bubbleView.autoresizingMask=UIViewAutoresizingFlexibleLeftMargin|UIViewAutoresizingFlexibleTopMargin;
     bubbleView.layer.cornerRadius=23;bubbleView.layer.cornerCurve=kCACornerCurveContinuous;
     bubbleView.layer.shadowColor=UIColor.blackColor.CGColor;bubbleView.layer.shadowOpacity=0.18;bubbleView.layer.shadowRadius=7;bubbleView.layer.shadowOffset=CGSizeMake(0,3);
     bubbleView.tintAdjustmentMode=UIViewTintAdjustmentModeNormal;
@@ -463,16 +475,23 @@ static const CGFloat kWDGMenuCancelGap=8;
     UIButton *b=[UIButton buttonWithType:UIButtonTypeCustom];b.frame=bubbleView.bounds;b.autoresizingMask=UIViewAutoresizingFlexibleWidth|UIViewAutoresizingFlexibleHeight;b.backgroundColor=UIColor.clearColor;
     b.accessibilityLabel=@"微店助手，打开面板";b.accessibilityIdentifier=@"WDG.FloatingButton";
     [b addTarget:self action:@selector(togglePanel) forControlEvents:UIControlEventTouchUpInside];
+    [b addTarget:self action:@selector(bubblePressDown) forControlEvents:UIControlEventTouchDown];
+    [b addTarget:self action:@selector(bubblePressUp) forControlEvents:UIControlEventTouchUpInside|UIControlEventTouchUpOutside|UIControlEventTouchCancel];
     [b addGestureRecognizer:[[UIPanGestureRecognizer alloc] initWithTarget:self action:@selector(drag:)]];
     [bubbleView addSubview:b];
     [root.view addSubview:bubbleView];w.hidden=NO;
     [WDGCore.shared recordEvent:@"overlay_ready" details:@{@"version":WDGVersion,@"build":WDGBuildID}];
 }
+- (void)bubblePressDown {[UIView animateWithDuration:0.10 animations:^{self.bubble.transform=CGAffineTransformMakeScale(0.93,0.93);}];}
+- (void)bubblePressUp {[UIView animateWithDuration:0.15 animations:^{self.bubble.transform=CGAffineTransformIdentity;}];}
+- (void)buttonPressDown:(UIButton *)sender {[UIView animateWithDuration:0.10 animations:^{sender.transform=CGAffineTransformMakeScale(0.93,0.93);}];}
+- (void)buttonPressUp:(UIButton *)sender {[UIView animateWithDuration:0.15 animations:^{sender.transform=CGAffineTransformIdentity;}];}
 - (void)drag:(UIPanGestureRecognizer *)g {
+    if(g.state==UIGestureRecognizerStateBegan)self.bubble.transform=CGAffineTransformIdentity;
     CGPoint d=[g translationInView:self.window],p=self.bubble.center;
     self.bubble.center=CGPointMake(MIN(MAX(p.x+d.x,26),self.window.bounds.size.width-26),MIN(MAX(p.y+d.y,MAX(self.window.safeAreaInsets.top,24)+26),self.window.bounds.size.height-MAX(self.window.safeAreaInsets.bottom,20)-26));
     [g setTranslation:CGPointZero inView:self.window];
-    if(g.state==UIGestureRecognizerStateEnded){CGPoint c=self.bubble.center;c.x=c.x<self.window.bounds.size.width/2?27:self.window.bounds.size.width-27;[UIView animateWithDuration:0.2 animations:^{self.bubble.center=c;}];}
+    if(g.state==UIGestureRecognizerStateEnded){CGPoint c=self.bubble.center;c.x=c.x<self.window.bounds.size.width/2?26:self.window.bounds.size.width-26;[UIView animateWithDuration:0.25 delay:0 usingSpringWithDamping:0.75 initialSpringVelocity:0 options:0 animations:^{self.bubble.center=c;} completion:nil];}
 }
 - (void)togglePanel {if(self.card&&!self.card.hidden)[self closePanel];else [self openPanel];}
 - (void)openPanel {
@@ -527,6 +546,8 @@ static const CGFloat kWDGMenuCancelGap=8;
     self.card=[UIView new];self.card.backgroundColor=UIColor.clearColor;self.card.tintAdjustmentMode=UIViewTintAdjustmentModeNormal;self.card.layer.cornerRadius=kWDGCardRadius;self.card.layer.cornerCurve=kCACornerCurveContinuous;
     self.card.layer.shadowColor=UIColor.blackColor.CGColor;self.card.layer.shadowOpacity=0.10;self.card.layer.shadowRadius=26;self.card.layer.shadowOffset=CGSizeMake(0,12);
     self.card.translatesAutoresizingMaskIntoConstraints=NO;[root addSubview:self.card];
+    UIView *cardEdge=WDGEdgeView(kWDGCardRadius);[self.card addSubview:cardEdge];
+    [NSLayoutConstraint activateConstraints:@[[cardEdge.leadingAnchor constraintEqualToAnchor:self.card.leadingAnchor constant:-1],[cardEdge.trailingAnchor constraintEqualToAnchor:self.card.trailingAnchor constant:1],[cardEdge.topAnchor constraintEqualToAnchor:self.card.topAnchor constant:-1],[cardEdge.bottomAnchor constraintEqualToAnchor:self.card.bottomAnchor constant:1]]];
     UIVisualEffectView *cardGlass=WDGMakeGlass(kWDGCardRadius);[self.card addSubview:cardGlass];
     [NSLayoutConstraint activateConstraints:@[
         [cardGlass.leadingAnchor constraintEqualToAnchor:self.card.leadingAnchor],
@@ -554,10 +575,10 @@ static const CGFloat kWDGMenuCancelGap=8;
     [NSLayoutConstraint activateConstraints:@[fitsContent,softCap]];
     UIStackView *stack=[UIStackView new];stack.axis=UILayoutConstraintAxisVertical;stack.spacing=kWDGSectionGap;stack.translatesAutoresizingMaskIntoConstraints=NO;[scroll addSubview:stack];
     [NSLayoutConstraint activateConstraints:@[[stack.leadingAnchor constraintEqualToAnchor:scroll.contentLayoutGuide.leadingAnchor],[stack.trailingAnchor constraintEqualToAnchor:scroll.contentLayoutGuide.trailingAnchor],[stack.topAnchor constraintEqualToAnchor:scroll.contentLayoutGuide.topAnchor],[stack.bottomAnchor constraintEqualToAnchor:scroll.contentLayoutGuide.bottomAnchor],[stack.widthAnchor constraintEqualToAnchor:scroll.frameLayoutGuide.widthAnchor]]];
-    UILabel *title=[self label:23 weight:UIFontWeightBold];title.text=@"准备开抢";
+    UILabel *title=[self label:20 weight:UIFontWeightBold];title.text=@"准备开抢";
     UIButton *more=[self iconButton:@"ellipsis" action:@selector(showMore) label:@"更多选项"],*close=[self iconButton:@"xmark" action:@selector(closePanel) label:@"收起面板"];
     more.accessibilityIdentifier=@"WDG.More";close.accessibilityIdentifier=@"WDG.ClosePanel";
-    UIStackView *header=[[UIStackView alloc] initWithArrangedSubviews:@[title,more,close]];header.axis=UILayoutConstraintAxisHorizontal;header.alignment=UIStackViewAlignmentCenter;header.spacing=2;[stack addArrangedSubview:header];
+    UIStackView *header=[[UIStackView alloc] initWithArrangedSubviews:@[title,more,close]];header.axis=UILayoutConstraintAxisHorizontal;header.alignment=UIStackViewAlignmentCenter;header.spacing=8;[stack addArrangedSubview:header];
     self.productLabel=[self label:15 weight:UIFontWeightMedium];self.productLabel.numberOfLines=2;self.productLabel.userInteractionEnabled=NO;
     self.detailLabel=[self rowDetail:nil];self.detailLabel.lineBreakMode=NSLineBreakByTruncatingMiddle;
     UIControl *product=[self rowWithSymbol:@"bag.fill" title:self.productLabel detail:self.detailLabel value:nil chevron:YES];
@@ -575,7 +596,7 @@ static const CGFloat kWDGMenuCancelGap=8;
     self.maximumAmount=[UITextField new];self.maximumAmount.placeholder=@"0.00";self.maximumAmount.borderStyle=UITextBorderStyleNone;self.maximumAmount.backgroundColor=UIColor.clearColor;self.maximumAmount.keyboardType=UIKeyboardTypeDecimalPad;self.maximumAmount.textAlignment=NSTextAlignmentRight;self.maximumAmount.font=[UIFont monospacedDigitSystemFontOfSize:22 weight:UIFontWeightSemibold];self.maximumAmount.textColor=UIColor.labelColor;self.maximumAmount.tintColor=[self accent];self.maximumAmount.adjustsFontSizeToFitWidth=YES;self.maximumAmount.minimumFontSize=16;self.maximumAmount.accessibilityLabel=@"最高实付金额，含运费";self.maximumAmount.accessibilityIdentifier=@"WDG.MaximumTotal";self.maximumAmount.translatesAutoresizingMaskIntoConstraints=NO;
     UIToolbar *toolbar=[UIToolbar new];toolbar.tintColor=[self accent];[toolbar sizeToFit];toolbar.items=@[[[UIBarButtonItem alloc] initWithBarButtonSystemItem:UIBarButtonSystemItemFlexibleSpace target:nil action:nil],[[UIBarButtonItem alloc] initWithTitle:@"完成" style:UIBarButtonItemStyleDone target:self action:@selector(endEditing)]];self.maximumAmount.inputAccessoryView=toolbar;
     [amountBox addSubview:currency];[amountBox addSubview:self.maximumAmount];
-    [NSLayoutConstraint activateConstraints:@[[currency.leadingAnchor constraintEqualToAnchor:amountBox.leadingAnchor],[currency.centerYAnchor constraintEqualToAnchor:amountBox.centerYAnchor],[self.maximumAmount.leadingAnchor constraintEqualToAnchor:currency.trailingAnchor constant:4],[self.maximumAmount.trailingAnchor constraintEqualToAnchor:amountBox.trailingAnchor],[self.maximumAmount.centerYAnchor constraintEqualToAnchor:amountBox.centerYAnchor],[self.maximumAmount.widthAnchor constraintEqualToConstant:84],[self.maximumAmount.heightAnchor constraintEqualToConstant:32],[amountBox.heightAnchor constraintEqualToConstant:32]]];
+    [NSLayoutConstraint activateConstraints:@[[currency.leadingAnchor constraintEqualToAnchor:amountBox.leadingAnchor],[currency.firstBaselineAnchor constraintEqualToAnchor:self.maximumAmount.firstBaselineAnchor],[self.maximumAmount.leadingAnchor constraintEqualToAnchor:currency.trailingAnchor constant:4],[self.maximumAmount.trailingAnchor constraintEqualToAnchor:amountBox.trailingAnchor],[self.maximumAmount.centerYAnchor constraintEqualToAnchor:amountBox.centerYAnchor],[self.maximumAmount.widthAnchor constraintEqualToConstant:96],[self.maximumAmount.heightAnchor constraintEqualToConstant:32],[amountBox.heightAnchor constraintEqualToConstant:32]]];
     [amountBox addGestureRecognizer:[[UITapGestureRecognizer alloc] initWithTarget:self action:@selector(focusAmount)]];
     UIView *money=[self rowWithSymbol:@"creditcard" title:[self rowTitle:@"最高实付"] detail:[self rowDetail:@"含运费"] value:amountBox chevron:NO];
     money.accessibilityIdentifier=@"WDG.AmountRow";
@@ -591,8 +612,8 @@ static const CGFloat kWDGMenuCancelGap=8;
     self.statusDetail=[self label:12 weight:UIFontWeightRegular];self.statusDetail.textColor=UIColor.secondaryLabelColor;self.statusDetail.numberOfLines=0;self.statusDetail.lineBreakMode=NSLineBreakByWordWrapping;self.statusDetail.hidden=YES;
     [self.statusDetail setContentCompressionResistancePriority:UILayoutPriorityRequired forAxis:UILayoutConstraintAxisVertical];[self.statusDetail setContentCompressionResistancePriority:UILayoutPriorityDefaultLow forAxis:UILayoutConstraintAxisHorizontal];
     [footer addArrangedSubview:self.statusDetail];
-    self.primaryButton=[UIButton buttonWithType:UIButtonTypeSystem];self.primaryButton.backgroundColor=[self accent];self.primaryButton.layer.cornerRadius=kWDGButtonRadius;self.primaryButton.layer.cornerCurve=kCACornerCurveContinuous;[self.primaryButton setTitleColor:UIColor.whiteColor forState:UIControlStateNormal];self.primaryButton.titleLabel.font=[UIFont systemFontOfSize:16 weight:UIFontWeightSemibold];[self.primaryButton setTitle:@"准备抢购" forState:UIControlStateNormal];self.primaryButton.accessibilityIdentifier=@"WDG.ArmTask";[self.primaryButton.heightAnchor constraintEqualToConstant:kWDGButtonHeight].active=YES;[self.primaryButton addTarget:self action:@selector(schedule) forControlEvents:UIControlEventTouchUpInside];[footer addArrangedSubview:self.primaryButton];
-    self.cancelButton=[UIButton buttonWithType:UIButtonTypeSystem];self.cancelButton.tintColor=UIColor.secondaryLabelColor;self.cancelButton.titleLabel.font=[UIFont systemFontOfSize:13 weight:UIFontWeightMedium];[self.cancelButton setTitle:@"取消任务" forState:UIControlStateNormal];[self.cancelButton addTarget:self action:@selector(cancel) forControlEvents:UIControlEventTouchUpInside];self.cancelButton.accessibilityIdentifier=@"WDG.CancelTask";self.cancelButton.hidden=YES;[footer addArrangedSubview:self.cancelButton];
+    self.primaryButton=[UIButton buttonWithType:UIButtonTypeSystem];self.primaryButton.backgroundColor=[self accent];self.primaryButton.layer.cornerRadius=kWDGButtonRadius;self.primaryButton.layer.cornerCurve=kCACornerCurveContinuous;[self.primaryButton setTitleColor:UIColor.whiteColor forState:UIControlStateNormal];self.primaryButton.titleLabel.font=[UIFont systemFontOfSize:16 weight:UIFontWeightSemibold];[self.primaryButton setTitle:@"准备抢购" forState:UIControlStateNormal];self.primaryButton.accessibilityIdentifier=@"WDG.ArmTask";[self.primaryButton.heightAnchor constraintEqualToConstant:kWDGButtonHeight].active=YES;[self.primaryButton addTarget:self action:@selector(schedule) forControlEvents:UIControlEventTouchUpInside];[self.primaryButton addTarget:self action:@selector(buttonPressDown:) forControlEvents:UIControlEventTouchDown];[self.primaryButton addTarget:self action:@selector(buttonPressUp:) forControlEvents:UIControlEventTouchUpInside|UIControlEventTouchUpOutside|UIControlEventTouchCancel];[footer addArrangedSubview:self.primaryButton];
+    self.cancelButton=[UIButton buttonWithType:UIButtonTypeSystem];self.cancelButton.tintColor=UIColor.secondaryLabelColor;self.cancelButton.titleLabel.font=[UIFont systemFontOfSize:13 weight:UIFontWeightMedium];[self.cancelButton setTitle:@"取消任务" forState:UIControlStateNormal];[self.cancelButton addTarget:self action:@selector(cancel) forControlEvents:UIControlEventTouchUpInside];self.cancelButton.accessibilityIdentifier=@"WDG.CancelTask";self.cancelButton.hidden=YES;[self.cancelButton.heightAnchor constraintEqualToConstant:40].active=YES;[footer addArrangedSubview:self.cancelButton];
     self.versionLabel=[self label:10 weight:UIFontWeightRegular];self.versionLabel.textColor=UIColor.tertiaryLabelColor;self.versionLabel.textAlignment=NSTextAlignmentRight;self.versionLabel.numberOfLines=1;self.versionLabel.userInteractionEnabled=NO;
     self.exportLink=[self textLink:@"导出诊断" action:@selector(export)];self.exportLink.accessibilityIdentifier=@"WDG.ExportDiagnostics";
     UIView *footerLeft=[UIView new],*footerRight=[UIView new];
@@ -649,7 +670,7 @@ static const CGFloat kWDGMenuCancelGap=8;
     // overlay scrim) and hides only once the overlay is up: hiding it in
     // beginOverlay leaves a beat of bare dimmed background. Guarded: if the
     // overlay is already being dismissed or removed, the card stays put.
-    __weak WDGPanel *weakSelf=self;
+    // (weakSelf is the one declared at the top of this method for scrimAction.)
     [overlay presentWithCompletion:^{WDGPanel *panel=weakSelf;if(panel&&panel.overlay==overlay&&!panel.overlayBusy)panel.card.hidden=YES;}];
 }
 - (void)cancelTimePicker {
@@ -727,7 +748,7 @@ static const CGFloat kWDGMenuCancelGap=8;
     chevron.tintColor=UIColor.tertiaryLabelColor;chevron.translatesAutoresizingMaskIntoConstraints=NO;chevron.userInteractionEnabled=NO;
     [row addSubview:chevron];
     [NSLayoutConstraint activateConstraints:@[
-        [chevron.trailingAnchor constraintEqualToAnchor:row.trailingAnchor constant:-4],
+        [chevron.trailingAnchor constraintEqualToAnchor:row.trailingAnchor],
         [chevron.centerYAnchor constraintEqualToAnchor:row.centerYAnchor]]];
     return row;
 }
@@ -747,7 +768,7 @@ static const CGFloat kWDGMenuCancelGap=8;
         [label.leadingAnchor constraintEqualToAnchor:row.leadingAnchor],
         [label.centerYAnchor constraintEqualToAnchor:row.centerYAnchor],
         [label.trailingAnchor constraintLessThanOrEqualToAnchor:toggle.leadingAnchor constant:-10],
-        [toggle.trailingAnchor constraintEqualToAnchor:row.trailingAnchor constant:-12],
+        [toggle.trailingAnchor constraintEqualToAnchor:row.trailingAnchor],
         [toggle.centerYAnchor constraintEqualToAnchor:row.centerYAnchor],
         [row.heightAnchor constraintGreaterThanOrEqualToConstant:kWDGMenuRowHeight]]];
     [row addTarget:self action:@selector(tapSwitchRow:) forControlEvents:UIControlEventTouchUpInside];
@@ -758,7 +779,7 @@ static const CGFloat kWDGMenuCancelGap=8;
 }
 - (UIView *)menuHairline {
     UIView *line=[UIView new];line.translatesAutoresizingMaskIntoConstraints=NO;line.userInteractionEnabled=NO;
-    line.backgroundColor=[UIColor.separatorColor colorWithAlphaComponent:0.5];
+    line.backgroundColor=UIColor.separatorColor;
     [line.heightAnchor constraintEqualToConstant:kWDGHairlineHeight].active=YES;return line;
 }
 - (WDGRowControl *)menuRowWithTitle:(NSString *)title color:(UIColor *)color checked:(BOOL)checked tag:(NSInteger)tag {
@@ -805,7 +826,7 @@ static const CGFloat kWDGMenuCancelGap=8;
     scroll.contentInsetAdjustmentBehavior=UIScrollViewContentInsetAdjustmentNever;[card addSubview:scroll];
     UIView *cancelBar=[UIView new];cancelBar.translatesAutoresizingMaskIntoConstraints=NO;[card addSubview:cancelBar];
     UIView *cancelLine=[UIView new];cancelLine.translatesAutoresizingMaskIntoConstraints=NO;cancelLine.userInteractionEnabled=NO;
-    cancelLine.backgroundColor=[UIColor.separatorColor colorWithAlphaComponent:0.5];[cancelBar addSubview:cancelLine];
+    cancelLine.backgroundColor=UIColor.separatorColor;[cancelBar addSubview:cancelLine];
     WDGRowControl *cancelRow=[self menuRowWithTitle:@"取消" color:UIColor.secondaryLabelColor checked:NO tag:-1];
     for(UIView *view in cancelRow.subviews) if([view isKindOfClass:UILabel.class]){UILabel *label=(UILabel *)view;label.textAlignment=NSTextAlignmentCenter;[label.trailingAnchor constraintEqualToAnchor:cancelRow.trailingAnchor].active=YES;break;}
     [cancelBar addSubview:cancelRow];
@@ -818,7 +839,7 @@ static const CGFloat kWDGMenuCancelGap=8;
         [cancelBar.leadingAnchor constraintEqualToAnchor:card.leadingAnchor],
         [cancelBar.trailingAnchor constraintEqualToAnchor:card.trailingAnchor],
         [cancelBar.bottomAnchor constraintEqualToAnchor:card.bottomAnchor],
-        [cancelBar.heightAnchor constraintEqualToConstant:kWDGHairlineHeight+kWDGMenuCancelGap+kWDGMenuRowHeight],
+        [cancelBar.heightAnchor constraintEqualToConstant:kWDGHairlineHeight+kWDGMenuCancelGap+kWDGMenuRowHeight+10],
         [cancelLine.leadingAnchor constraintEqualToAnchor:cancelBar.leadingAnchor],
         [cancelLine.trailingAnchor constraintEqualToAnchor:cancelBar.trailingAnchor],
         [cancelLine.topAnchor constraintEqualToAnchor:cancelBar.topAnchor],
@@ -826,7 +847,7 @@ static const CGFloat kWDGMenuCancelGap=8;
         [cancelRow.leadingAnchor constraintEqualToAnchor:cancelBar.leadingAnchor constant:kWDGPadding],
         [cancelRow.trailingAnchor constraintEqualToAnchor:cancelBar.trailingAnchor constant:-kWDGPadding],
         [cancelRow.topAnchor constraintEqualToAnchor:cancelLine.bottomAnchor constant:kWDGMenuCancelGap],
-        [cancelRow.bottomAnchor constraintEqualToAnchor:cancelBar.bottomAnchor],
+        [cancelRow.bottomAnchor constraintEqualToAnchor:cancelBar.bottomAnchor constant:-10],
         fitsContent]];
     UIStackView *stack=[UIStackView new];stack.axis=UILayoutConstraintAxisVertical;stack.spacing=0;stack.translatesAutoresizingMaskIntoConstraints=NO;[scroll addSubview:stack];
     [NSLayoutConstraint activateConstraints:@[
@@ -839,7 +860,7 @@ static const CGFloat kWDGMenuCancelGap=8;
     [stack addArrangedSubview:titleLabel];[stack setCustomSpacing:subtitle.length?6:14 afterView:titleLabel];
     if(subtitle.length){
         UILabel *subtitleLabel=[UILabel new];subtitleLabel.translatesAutoresizingMaskIntoConstraints=NO;subtitleLabel.font=[UIFont systemFontOfSize:12 weight:UIFontWeightRegular];
-        subtitleLabel.textColor=UIColor.secondaryLabelColor;subtitleLabel.numberOfLines=0;subtitleLabel.text=subtitle;
+        subtitleLabel.textColor=UIColor.secondaryLabelColor;subtitleLabel.numberOfLines=0;subtitleLabel.text=subtitle;subtitleLabel.textAlignment=NSTextAlignmentCenter;
         [stack addArrangedSubview:subtitleLabel];[stack setCustomSpacing:12 afterView:subtitleLabel];
     }
     if(items.count){
